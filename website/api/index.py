@@ -13,11 +13,21 @@ shareable secret link.
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
+# Vercel's Python runtime doesn't guarantee this file's own directory is on
+# sys.path when it imports index.py -- a plain `import store` was failing
+# there ("could not import api/index.py") even though the exact same layout
+# works fine locally. Adding it explicitly makes the sibling import robust
+# regardless of whatever working directory Vercel actually invokes this
+# from.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import store
+from fastapi import FastAPI, Header, HTTPException  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+import store  # noqa: E402
 
 app = FastAPI(title="TermQuarium Cloud Saves")
 
