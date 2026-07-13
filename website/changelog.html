@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Changelog — TermQuarium</title>
+<meta name="description" content="What shipped in TermQuarium, version by version." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%A0%3C/text%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="wrap">
+      <a class="logo" href="index.html"><span class="glyph">&gt;&lt;&gt;</span>TermQuarium</a>
+      <div class="nav-right">
+        <div class="nav-links" id="navLinks">
+          <a class="link" href="index.html">Home</a>
+          <a class="link" href="features.html">Features</a>
+          <a class="link" href="documentation/index.html">Docs</a>
+          <a class="link" href="download.html">Download</a>
+          <a class="link" href="faq.html">FAQ</a>
+          <a class="link" href="changelog.html" aria-current="page">Changelog</a>
+          <a class="link" href="https://github.com/youssefahmed2017/TermQuarium">GitHub</a>
+        </div>
+        <div class="nav-actions">
+          <button class="icon-btn" id="themeToggle" aria-label="Toggle day/night theme" title="Toggle day/night theme">🌙</button>
+          <button class="icon-btn nav-toggle" id="navToggle" aria-label="Open menu" aria-expanded="false" aria-controls="navLinks">☰</button>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero page-hero">
+    <div class="wrap">
+      <span class="eyebrow">What shipped</span>
+      <h1>Changelog</h1>
+      <p class="lede">TermQuarium just had its first tracked release — this page will grow with every one after it.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="tight">
+      <div class="wrap">
+
+        <div class="changelog-entry">
+          <div class="changelog-head">
+            <span class="changelog-version mono">v1.0.0</span>
+            <span class="changelog-date">Initial release</span>
+          </div>
+          <div class="changelog-group">
+            <span class="kind">Added</span>
+            <ul>
+              <li>Four species — Goldfish, Angelfish, Betta, and the predatory Shark</li>
+              <li>Six personalities (Friendly, Explorer, Shy, Greedy, Lazy, Playful) plus an independent Sleepy trait</li>
+              <li>Earned relationships — a private bond score per pair, remembering up to 5 reasons why</li>
+              <li>Container homes — the Rock and Castle, with real sleeping capacity fish queue for by preference</li>
+              <li>A continuous day/night cycle with occasional morning wake-up vignettes</li>
+              <li>Breeding — eligible bonded pairs can have babies, capped so the tank never overruns</li>
+              <li>Visitor economy, Shop, and an Emergency Aquarium Welfare safety net for a bankrupt tank</li>
+              <li>Named saves with rename/duplicate/delete, and a pause that actually freezes the simulation</li>
+              <li>Standalone Windows installer</li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>Built with <a href="https://github.com/youssefahmed2017/cozy_tui">cozy_tui</a> · © 2026 Youssef Ahmed</span>
+      <span><a href="https://github.com/youssefahmed2017/TermQuarium">GitHub</a></span>
+    </div>
+  </footer>
+
+<script src="script.js"></script>
+</body>
+</html>
