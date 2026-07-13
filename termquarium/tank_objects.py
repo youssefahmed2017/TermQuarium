@@ -32,7 +32,14 @@ class Decoration(Widget):
     avoid_decorations()), or toward it if it's their favorite spot (see
     Fish.favorite_decoration). `color` is either one color for every row of
     `art`, or a list matching len(art) for a little per-part shading. `kind`
-    is the plain display name shown in the Inspector's "Favorite spot" line."""
+    is the plain display name shown in the Inspector's "Favorite spot" line.
+
+    `capacity` (Phase 7) is the only thing that makes a decoration a
+    "container" fish can sleep inside overnight (see Fish._claim_home()) --
+    0 (the default, and every non-container kind's value) means it isn't
+    one. No separate ContainerDecoration subclass: a plain attribute is
+    simpler and means any future decoration becomes a home just by picking
+    a nonzero capacity in DECORATION_SHOP_ITEMS, no new class required."""
 
     def __init__(
         self,
@@ -42,6 +49,7 @@ class Decoration(Widget):
         color,
         kind: str = "Decoration",
         price: int = 0,
+        capacity: int = 0,
     ):
         colors = [color] * len(art) if isinstance(color, str) else list(color)
         super().__init__(round(x), round(y), Style(fg=colors[0]), name="Decoration")
@@ -49,10 +57,15 @@ class Decoration(Widget):
         self.row_styles = [Style(fg=c) for c in colors]
         self.kind = kind
         self.price = price  # this kind's Shop price -- sell_value is a fraction of it
+        self.capacity = capacity
         self.fx, self.fy = float(x), float(y)
         w = max(text_width(line) for line in art)
         h = len(art)
         self.radius = max(w, h) / 2
+
+    @property
+    def is_container(self) -> bool:
+        return self.capacity > 0
 
     @property
     def sell_value(self) -> int:

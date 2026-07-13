@@ -107,6 +107,66 @@ relaxing) is happening -- a species-level trait, not a personality one like
 Friendly's own group pull, so it applies underneath everything else in the
 priority chain, just above plain wandering.
 
+Save/Load management: the Load menu's Rename/Duplicate/Delete (each mirroring
+the Fish Inspector's own Rename/Sell pattern -- a prompt or confirm dialog,
+then the actual save.py mutation once submitted/confirmed) sit alongside
+Load on every card. Save (P) itself only prompts for a name the very first
+time in a fresh session; once attached to a save (by loading one, or by
+that first manual save), it writes straight back into the same file from
+then on, so a normal session doesn't pile up one save per day.
+
+Phase 7: container decorations. `capacity` (Rock=2, Castle=4; everything
+else 0) is the one number that turns a decoration into a home a sleeping
+fish can claim overnight -- no separate class, so any future decoration
+becomes one just by giving it a nonzero capacity. Each night, a fish picks
+a container via Fish._claim_home(), priority: its favorite spot (if that's
+a container with room) -> a friend's already-claimed container (if it has
+room, so best friends end up sleeping in the *same* home) -> the nearest
+container with any room -> the tank floor (the original friend-close/
+rival-far/settle behavior, unchanged, for whoever finds no room). Once
+inside, a fish is frozen and invisible in the tank itself -- clicking the
+decoration (the existing Decoration Inspector) is the only way to peek in
+and see who's home. Waking clears the claim and drops the fish right back
+at the door. A lighthearted one-line toast at the Night -> Morning
+transition (see choose_morning_vignette()) picks a Friend pair for a bit of
+narrative texture -- cosmetic only, since every fish still wakes together
+mechanically; it isn't simulating individual wake times. Personality biases
+which container (if any) a fish claims -- see Fish._claim_home()'s
+docstring for Lazy/Shy/Friendly/Explorer's exact reordering of the baseline
+priority.
+
+Phase 8: Pause menu. Esc (which used to instantly quit) opens it instead --
+every Fish/BubbleField checks the same shared `paused` flag this menu
+flips, freezing solid (frozen in place and still drawn, unlike a housed
+fish which stays invisible) rather than just showing a menu over a
+simulation that keeps quietly running behind it. Quit lives behind its own
+confirmation now, since Esc no longer doubles as instant, unconfirmed exit.
+
+Sleepy: an independent yes/no trait rolled once at birth (roll_is_sleepy()),
+stackable with a fish's regular personality rather than replacing it --
+a Greedy fish can also be Sleepy. It only matters for the morning vignette
+(choose_morning_vignette()): a Sleepy sleeper practically never gets the
+"wake" flavor, resisting a normal boop almost every time (*boop* ... *...zzz*
+instead of *awake*) rather than actually waking.
+
+Phase 9: relationship scores, replacing the old one-time Friend/Rival dice
+roll (see relationships.py's module docstring for the full model). Every
+pair of fish shares exactly one continuous score in [-100, 100] -- nudged
+by real interactions (record_wake_up/record_slept_together/
+record_gave_up_home, the only three from the original design with an
+actual mechanic to hook into today; the rest -- sharing/stealing food,
+protecting from a shark, playing, fighting -- are natural follow-ups once
+those mechanics exist), decaying slowly back toward 0 if left alone
+(decay_relationships(), once a day), and never shown to the player as a
+raw number -- only a state (relationship_state(): Rival/Dislikes/Neutral/
+Friend/Best Friend) plus its most recent reasons. Fish.friend/Fish.rival
+are now read-only properties derived from whichever relationship is
+currently strongest/weakest (relationships.best_bond()/worst_bond()), so
+all of Fish's existing friend-following/rival-fleeing/sleep-together/
+container-priority steering keeps working unchanged. A brand new fish
+(starter, bought, or born) starts with no relationships at all -- they're
+earned, not rolled.
+
 Everything reusable/testable -- pure steering/economy/relationship math, the
 Fish/Decoration/Food/BubbleField widgets, and the modal-builder functions --
 lives in the termquarium/ package next to this file; aquarium.py itself is
@@ -126,7 +186,7 @@ from cozy_tui import App, Style
 from cozy_tui._width import text_width
 from cozy_tui.events import Key, MouseClick, MouseMove
 from cozy_tui.motion import lerp_color
-from cozy_tui.widgets import Box, Button, Label
+from cozy_tui.widgets import Button, Label
 
 from examples.aquarium.termquarium.bubbles import BubbleField, _Bubble, rise_bubble
 from examples.aquarium.termquarium.constants import *
@@ -138,7 +198,13 @@ from examples.aquarium.termquarium.economy import (
     should_grant_welfare,
     should_warn_hungry,
 )
-from examples.aquarium.termquarium.fish import Fish, _make_fish, describe_fish, fish_at
+from examples.aquarium.termquarium.fish import (
+    Fish,
+    _make_fish,
+    describe_fish,
+    fish_at,
+    occupants_of,
+)
 from examples.aquarium.termquarium.inspectors import (
     _build_daily_summary,
     _build_decoration_inspector,
@@ -146,13 +212,31 @@ from examples.aquarium.termquarium.inspectors import (
     _build_settings,
 )
 from examples.aquarium.termquarium.relationships import (
+    all_relationship_pairs,
     choose_baby_species_name,
+    choose_morning_vignette,
     clear_relationships,
+    decay_relationships,
     find_breeding_pairs,
-    form_relationship,
+    find_mutual_friend_pairs,
+    get_relationship,
     random_personality,
+    record_gave_up_home,
+    record_slept_together,
+    record_wake_up,
+    relationship_state,
+    remember,
+    roll_is_sleepy,
+    set_relationship,
 )
-from examples.aquarium.termquarium.save import list_saves, read_save, write_save
+from examples.aquarium.termquarium.save import (
+    delete_save,
+    duplicate_save,
+    list_saves,
+    read_save,
+    rename_save,
+    write_save,
+)
 from examples.aquarium.termquarium.shop import build_shop as _build_shop
 from examples.aquarium.termquarium.steering import (
     avoid_decorations,
@@ -160,30 +244,30 @@ from examples.aquarium.termquarium.steering import (
     random_velocity,
     school_velocity,
     steer,
-    steer_away_from,
     steer_toward_food,
 )
 from examples.aquarium.termquarium.styles import (
-    BUBBLE_STYLE,
-    FOOD_STYLE,
-    HEART_STYLE,
-    MUTED,
     STATS,
     TITLE,
+    VIGNETTE_STYLE,
     WATER_LINE,
 )
 from examples.aquarium.termquarium.tank_objects import Decoration, Food, decoration_at
 from examples.aquarium.termquarium.ui import (
     build_help_menu,
+    build_pause_menu,
     build_save_menu,
     build_start_menu,
 )
+from examples.aquarium.termquarium.vignettes import MorningVignette
 from examples.aquarium.termquarium.world import (
     compute_time_of_day,
     compute_water_temperature,
     get_day_phase,
     night_blend,
 )
+
+import math
 
 
 def main() -> None:
@@ -195,7 +279,7 @@ def main() -> None:
             2,
             0,
             "TermQuarium -- click to feed, S: shop, G: settings, P: save, L: load, "
-            "Z: stress test, Esc: quit",
+            "Z: stress test, Esc: pause",
             TITLE,
         )
     )
@@ -226,6 +310,15 @@ def main() -> None:
     }
     hungry_warning_active = {"value": False}
     day_count = {"n": 0}
+    # Name of the save this session is currently "attached to" -- None until
+    # the player has either loaded or manually saved once. Once set, Save
+    # (P) writes straight back into that same save instead of prompting for
+    # a new name every time, so a normal play session doesn't pile up one
+    # file per day (see _save_game()).
+    current_save = {"name": None}
+    # Shared with every Fish/BubbleField -- the Pause menu (Esc) flips this
+    # and everything freezes solid; see _open_pause_menu().
+    paused = {"value": False}
     mouse_pos = {
         "x": None,
         "y": None,
@@ -250,7 +343,9 @@ def main() -> None:
     # Ambient bubbles, added before decorations so (plain add-order
     # z-layering, same convention as decorations-before-fish) they always
     # drift behind the furniture and fish rather than over them.
-    app.add(BubbleField(bounds, lambda: state["bubbles_enabled"]))
+    app.add(
+        BubbleField(bounds, lambda: state["bubbles_enabled"], lambda: paused["value"])
+    )
 
     def _make_starting_decoration(kind: str, x) -> Decoration:
         item = DECORATION_CATALOG[kind]
@@ -261,6 +356,7 @@ def main() -> None:
             item.colors,
             kind=kind,
             price=item.price,
+            capacity=item.capacity,
         )
 
     decorations = [
@@ -358,7 +454,7 @@ def main() -> None:
 
     def _open_decoration_inspector(d: Decoration) -> None:
         app.open_overlay(
-            _build_decoration_inspector(app, d, _sell_decoration),
+            _build_decoration_inspector(app, d, fish, _sell_decoration),
             close_on_click_outside=True,
         )
 
@@ -382,11 +478,11 @@ def main() -> None:
             decorations,
             mouse_pos,
             environment,
+            paused,
         )
         fish.append(f)
         app.add(f)
         _wire_tooltip(f)
-        form_relationship(f, fish)
         return f
 
     for _ in range(3):
@@ -441,6 +537,7 @@ def main() -> None:
             item.colors,
             kind=item.kind,
             price=item.price,
+            capacity=item.capacity,
         )
         decorations.append(d)
         # Insert right after the last existing Decoration (not app.add(),
@@ -478,12 +575,20 @@ def main() -> None:
                     "hunger": f.hunger,
                     "health": f.health,
                     "personality": f.personality,
+                    "is_sleepy": f.is_sleepy,
                     "age_seconds": max(0.0, time.monotonic() - f.birth_time),
                     "favorite": decoration_index.get(id(f.favorite_decoration)),
-                    "friend": fish_index.get(id(f.friend)),
-                    "rival": fish_index.get(id(f.rival)),
                 }
                 for f in fish
+            ],
+            "relationships": [
+                {
+                    "a": fish_index[id(a)],
+                    "b": fish_index[id(b)],
+                    "score": rel.score,
+                    "memories": list(rel.memories),
+                }
+                for a, b, rel in all_relationship_pairs(fish)
             ],
         }
 
@@ -512,6 +617,7 @@ def main() -> None:
                 item.colors,
                 kind=item.kind,
                 price=item.price,
+                capacity=item.capacity,
             )
             decorations.append(d)
             app.add(d)
@@ -537,9 +643,18 @@ def main() -> None:
                 mouse_pos=mouse_pos,
                 price=species.price,
                 environment=environment,
+                paused=paused,
             )
             f.display_name = saved.get("name", species.name)
-            for attr in ("vx", "vy", "speed", "hunger", "health", "personality"):
+            for attr in (
+                "vx",
+                "vy",
+                "speed",
+                "hunger",
+                "health",
+                "personality",
+                "is_sleepy",
+            ):
                 if attr in saved:
                     setattr(f, attr, saved[attr])
             f.birth_time = time.monotonic() - max(0.0, saved.get("age_seconds", 0.0))
@@ -548,23 +663,22 @@ def main() -> None:
             _wire_tooltip(f)
         for f, saved in zip(fish, snapshot.get("fish", [])):
             favorite = saved.get("favorite")
-            friend = saved.get("friend")
-            rival = saved.get("rival")
             f.favorite_decoration = (
                 decorations[favorite]
                 if isinstance(favorite, int) and 0 <= favorite < len(decorations)
                 else None
             )
-            f.friend = (
-                fish[friend]
-                if isinstance(friend, int) and 0 <= friend < len(fish)
-                else None
-            )
-            f.rival = (
-                fish[rival]
-                if isinstance(rival, int) and 0 <= rival < len(fish)
-                else None
-            )
+        for saved in snapshot.get("relationships", []):
+            a_idx, b_idx = saved.get("a"), saved.get("b")
+            if (
+                not isinstance(a_idx, int)
+                or not isinstance(b_idx, int)
+                or not (0 <= a_idx < len(fish))
+                or not (0 <= b_idx < len(fish))
+            ):
+                continue
+            rel = set_relationship(fish[a_idx], fish[b_idx], saved.get("score", 0.0))
+            rel.memories.extend(saved.get("memories", []))
         for saved in snapshot.get("foods", []):
             food = Food(saved.get("x", tank_x + 1), saved.get("y", tank_y + 1))
             foods.append(food)
@@ -572,6 +686,13 @@ def main() -> None:
         _refresh_stats()
 
     def _save_game() -> None:
+        # Once attached to a save (loaded, or saved manually once already
+        # this session), Save just writes back into it -- no prompt, no new
+        # file every day. Only the very first save of a fresh session (never
+        # loaded, never saved) asks for a name.
+        if current_save["name"] is not None:
+            _write_named_save(current_save["name"])
+            return
         default_name = f"Aquarium Day {day_count['n']}"
         app.prompt(
             "Save aquarium as",
@@ -581,6 +702,7 @@ def main() -> None:
 
     def _write_named_save(name: str) -> None:
         path = write_save(name, _snapshot())
+        current_save["name"] = name
         app.toast(f"Saved {path.stem}.", level="success")
 
     def _open_load_menu(on_loaded=None) -> None:
@@ -588,7 +710,9 @@ def main() -> None:
 
         def _load(path):
             try:
-                _load_snapshot(read_save(path)["aquarium"])
+                payload = read_save(path)
+                _load_snapshot(payload["aquarium"])
+                current_save["name"] = payload["metadata"].get("name", path.stem)
                 app.close_overlay(box)
                 if on_loaded is not None:
                     on_loaded()
@@ -596,7 +720,38 @@ def main() -> None:
             except (OSError, ValueError) as error:
                 app.toast(f"Couldn't load save: {error}", level="error")
 
-        box = build_save_menu(app, cards, _load)
+        def _rename(path, old_name, new_name):
+            try:
+                rename_save(path, new_name)
+                if current_save["name"] == old_name:
+                    current_save["name"] = new_name
+                app.toast(f"Renamed to {new_name}.", level="success")
+            except (OSError, ValueError) as error:
+                app.toast(f"Couldn't rename: {error}", level="error")
+            app.close_overlay(box)
+            _open_load_menu(on_loaded)
+
+        def _duplicate(path, new_name):
+            try:
+                duplicate_save(path, new_name)
+                app.toast(f"Duplicated as {new_name}.", level="success")
+            except (OSError, ValueError) as error:
+                app.toast(f"Couldn't duplicate: {error}", level="error")
+            app.close_overlay(box)
+            _open_load_menu(on_loaded)
+
+        def _delete(path, name):
+            delete_save(path)
+            if current_save["name"] == name:
+                # The save this session was attached to is gone -- the next
+                # Save should ask for a fresh name rather than silently
+                # recreating the exact file just deleted.
+                current_save["name"] = None
+            app.toast(f"Deleted {name}.", level="success")
+            app.close_overlay(box)
+            _open_load_menu(on_loaded)
+
+        box = build_save_menu(app, cards, _load, _rename, _duplicate, _delete)
         app.open_overlay(box, close_on_click_outside=True)
 
     def _open_shop():
@@ -629,10 +784,42 @@ def main() -> None:
         menu = build_start_menu(app, _new_aquarium, _load_save, _settings, _help)
         app.open_overlay(menu, close_on_escape=False)
 
+    def _confirm_quit():
+        app.confirm(
+            "Quit without saving? Progress since your last save will be lost.",
+            on_yes=lambda: app.quit(),
+        )
+
+    def _open_pause_menu():
+        # Esc used to instantly quit the whole app -- a single accidental
+        # keypress destroying an unsaved session. Now it pauses instead:
+        # every Fish/BubbleField freezes solid (see their own `paused`
+        # checks), and Quit lives behind this menu's own confirmation.
+        paused["value"] = True
+        box = None
+
+        def _resume():
+            app.close_overlay(box)
+
+        box = build_pause_menu(
+            app,
+            on_resume=_resume,
+            on_save=_save_game,
+            on_settings=_open_settings,
+            on_help=_open_help,
+            on_quit=_confirm_quit,
+        )
+        app.open_overlay(
+            box,
+            close_on_click_outside=True,
+            on_close=lambda _w: paused.update(value=False),
+        )
+
     app.add(Button(2, 2, "Open Shop").on_click(lambda _w: _open_shop()))
     app.add(Button(16, 2, "Settings").on_click(lambda _w: _open_settings()))
     app.add(Button(29, 2, "Save").on_click(lambda _w: _save_game()))
     app.add(Button(39, 2, "Load").on_click(lambda _w: _open_load_menu()))
+    app.add(Button(49, 2, "Pause").on_click(lambda _w: _open_pause_menu()))
     app.on_key("s", lambda: _open_shop())
     app.on_key("S", lambda: _open_shop())
     app.on_key("g", lambda: _open_settings())
@@ -696,13 +883,117 @@ def main() -> None:
             duration=6.0,
         )
 
+    def _fire_morning_vignette():
+        # A one-line Night -> Morning flavor toast for a Friend pair -- see
+        # choose_morning_vignette()'s docstring for why this is cosmetic
+        # texture, not a real per-fish wake-time simulation. "wake"/"resist"
+        # also get a short in-tank caption right where the pair actually
+        # are -- the toast is the headline, this is the cute moment.
+        result = choose_morning_vignette(find_mutual_friend_pairs(fish))
+        if result is None:
+            return
+        waker, sleeper, flavor = result
+
+        def _add_vignette(wakes: bool) -> None:
+            vignette = MorningVignette(
+                (waker.fx + sleeper.fx) / 2,
+                min(waker.fy, sleeper.fy) - 2,
+                waker._glyph(),
+                sleeper._glyph(),
+                VIGNETTE_STYLE,
+                wakes=wakes,
+            )
+            app.add(vignette)
+            app.after(
+                vignette.total_seconds,
+                lambda: (
+                    app.widgets.remove(vignette) if vignette in app.widgets else None
+                ),
+            )
+
+        if flavor == "wake":
+            app.toast(
+                f"{waker.display_name} notices {sleeper.display_name} is still "
+                f"asleep... *boop*... {sleeper.display_name} woke up!",
+                level="info",
+            )
+            record_wake_up(waker, sleeper)
+            _add_vignette(wakes=True)
+        elif flavor == "resist":
+            app.toast(
+                f"{waker.display_name} tries to boop {sleeper.display_name} awake... "
+                f"but {sleeper.display_name} is too sleepy to notice!",
+                level="info",
+            )
+            _add_vignette(wakes=False)
+        else:
+            app.toast(
+                f"{waker.display_name} notices {sleeper.display_name} is still "
+                f"asleep. {waker.display_name} leaves without them.",
+                level="info",
+            )
+
+    def _check_night_events():
+        # Two lightweight relationship-building checks run once at the
+        # Night -> Morning transition, alongside the vignette: pairs who
+        # ended up sleeping together (a shared container, or just close on
+        # the floor), and a homeless fish whose nearest housed tankmate
+        # benefits from the spot it didn't get. Both are real,
+        # currently-triggerable events -- see relationships.py's module
+        # docstring for which interactions from the original design aren't
+        # wired up yet (no mechanic exists for them today).
+        counted_together = set()
+        for a in fish:
+            for b in fish:
+                if a is b:
+                    continue
+                key = frozenset((id(a), id(b)))
+                if key in counted_together:
+                    continue
+                together = (
+                    a.sleeping_in is not None and a.sleeping_in is b.sleeping_in
+                ) or (
+                    a.sleeping_in is None
+                    and b.sleeping_in is None
+                    and math.hypot(a.fx - b.fx, a.fy - b.fy) <= SLEEP_CLOSE_DISTANCE
+                )
+                if together:
+                    counted_together.add(key)
+                    record_slept_together(a, b)
+
+        counted_gave_up = set()
+        for f in fish:
+            if f.sleeping_in is not None:
+                continue
+            housed_nearby = [
+                o
+                for o in fish
+                if o is not f
+                and o.sleeping_in is not None
+                and math.hypot(o.fx - f.fx, o.fy - f.fy) <= RELATIONSHIP_NEARBY_RADIUS
+            ]
+            if not housed_nearby:
+                continue
+            beneficiary = min(
+                housed_nearby, key=lambda o: math.hypot(o.fx - f.fx, o.fy - f.fy)
+            )
+            key = frozenset((id(f), id(beneficiary)))
+            if key in counted_gave_up:
+                continue
+            counted_gave_up.add(key)
+            record_gave_up_home(f, beneficiary)
+
     def _update_environment():
+        previous_phase = environment["phase"]
         fraction = compute_time_of_day(
             time.monotonic() - session_start, AGE_SECONDS_PER_DAY
         )
         environment["phase"] = get_day_phase(fraction)
         environment["temperature"] = compute_water_temperature(fraction)
         app.style.bg = lerp_color(DAY_BG, NIGHT_BG, night_blend(fraction))
+        if previous_phase == "Night" and environment["phase"] == "Morning":
+            _check_night_events()
+            _fire_morning_vignette()
 
     def _hunger_step() -> float:
         # Night: sleeping fish get hungry slower. Heat: a stressed fish
@@ -716,6 +1007,8 @@ def main() -> None:
         return step
 
     def _per_second_tick():
+        if paused["value"]:
+            return  # environment/hunger/breeding all frozen while paused
         _update_environment()
         hunger_step = _hunger_step()
         dead = []
@@ -779,11 +1072,11 @@ def main() -> None:
                 mouse_pos=mouse_pos,
                 price=species.price,
                 environment=environment,
+                paused=paused,
             )
             fish.append(baby)
             app.add(baby)
             _wire_tooltip(baby)
-            form_relationship(baby, fish)
             app.toast(
                 f"{parent_a.display_name} and {parent_b.display_name} had a baby! "
                 f"Welcome, {baby.display_name}.",
@@ -793,7 +1086,10 @@ def main() -> None:
         _refresh_stats()
 
     def _daily_tick():
+        if paused["value"]:
+            return
         day_count["n"] += 1
+        decay_relationships(fish)
         _try_breeding()
         attractiveness = compute_attractiveness(fish, decorations, foods)
         visitors, ticket_sales, donations = compute_visitor_income(attractiveness)
@@ -822,7 +1118,7 @@ def main() -> None:
     app.every(1.0, _per_second_tick)
     app.every(AGE_SECONDS_PER_DAY, _daily_tick)
 
-    app.on_key(Key.ESC, lambda: "quit")
+    app.on_key(Key.ESC, lambda: _open_pause_menu())
     _open_start_menu()
     app.run()
 

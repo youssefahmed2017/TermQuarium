@@ -90,11 +90,21 @@ def save_path(name: str, home: Path | None = None) -> Path:
     return saves_dir(home) / f"{safe_filename(name)}.json"
 
 
-def write_save(name: str, aquarium: dict[str, Any], home: Path | None = None) -> Path:
+def write_save(
+    name: str,
+    aquarium: dict[str, Any],
+    home: Path | None = None,
+    *,
+    created: str | None = None,
+) -> Path:
     """Write one save atomically and return its path.
 
     ``aquarium`` is the complete simulation state.  Its compact metadata is
     repeated at the top level so the load menu can render cards cheaply.
+    ``created`` overrides the usual "keep the existing file's creation time,
+    or stamp a fresh one" logic -- rename_save()/duplicate_save() pass the
+    original save's ``created`` through explicitly, since a rename/copy
+    isn't really a new aquarium even though it lands at a new path.
     """
     directory = ensure_data_dirs(home)
     path = directory / f"{safe_filename(name)}.json"
@@ -102,7 +112,7 @@ def write_save(name: str, aquarium: dict[str, Any], home: Path | None = None) ->
     existing = read_save(path) if path.exists() else None
     metadata = {
         "name": name.strip() or "Untitled Aquarium",
-        "created": (existing or {}).get("metadata", {}).get("created", now),
+        "created": created or (existing or {}).get("metadata", {}).get("created", now),
         "last_played": now,
         "fish": len(aquarium.get("fish", [])),
         "money": aquarium.get("state", {}).get("money", 0),
@@ -131,6 +141,45 @@ def read_save(path: Path) -> dict[str, Any]:
     if version != SAVE_VERSION:
         raise ValueError(f"Unsupported save version: {version}")
     return payload
+
+
+def delete_save(path: Path) -> None:
+    """Remove a save file. A no-op if it's already gone (e.g. deleted from
+    outside the game between listing saves and clicking Delete)."""
+    path.unlink(missing_ok=True)
+
+
+def rename_save(path: Path, new_name: str, home: Path | None = None) -> Path:
+    """Rename a save in place: same content and original creation time,
+    just a new display name -- and, since the filename is derived from the
+    name, a new underlying file. The old file is only removed once the new
+    one is written successfully, and only if the name actually changed to a
+    different path (renaming to the same name is a harmless no-op rather
+    than a delete-then-recreate)."""
+    payload = read_save(path)
+    new_path = write_save(
+        new_name,
+        payload["aquarium"],
+        home,
+        created=payload["metadata"].get("created"),
+    )
+    if new_path != path:
+        path.unlink(missing_ok=True)
+    return new_path
+
+
+def duplicate_save(path: Path, new_name: str, home: Path | None = None) -> Path:
+    """Copy an existing save under a new name, leaving the original
+    untouched -- same content and creation time (it's the same aquarium's
+    history, just branched), so a duplicated save right after loading looks
+    identical to its source until the player actually changes something."""
+    payload = read_save(path)
+    return write_save(
+        new_name,
+        payload["aquarium"],
+        home,
+        created=payload["metadata"].get("created"),
+    )
 
 
 def list_saves(home: Path | None = None) -> list[tuple[Path, dict[str, Any]]]:

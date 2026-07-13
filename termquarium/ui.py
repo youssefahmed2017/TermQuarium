@@ -14,24 +14,58 @@ MAX_CARDS_SHOWN = 4  # keeps the menu on one screen; no scrolling yet
 
 
 def build_save_menu(
-    app, cards: list[tuple[Path, dict]], on_load: Callable[[Path], None]
+    app,
+    cards: list[tuple[Path, dict]],
+    on_load: Callable[[Path], None],
+    on_rename: Callable[[Path, str, str], None],
+    on_duplicate: Callable[[Path, str], None],
+    on_delete: Callable[[Path, str], None],
 ) -> Box:
     """Render the save list from metadata, not simulation widgets -- cheap
     to draw since it never touches a save's full fish/decoration data. Each
     card shows exactly what the user asked for: enough at a glance to know
-    which aquarium to load without opening any of them."""
+    which aquarium to load without opening any of them. Rename/Duplicate
+    each open their own app.prompt() for a new name (same pattern as the
+    Fish Inspector's Rename); Delete opens an app.confirm() first, same
+    pattern as Sell -- all three call back into the caller (main()'s
+    _open_load_menu()) only once confirmed/submitted, which does the actual
+    save.py mutation and refreshes this menu."""
     muted = Style(fg="bright_black")
-    box = Box(0, 0, "460x360", title="Load Aquarium", border="rounded", style=app.style)
+    box = Box(0, 0, "520x440", title="Load Aquarium", border="rounded", style=app.style)
     if not cards:
         box.add(Label(2, 2, "No saves yet. Press P to create one.", muted))
     y = 2
     for path, meta in cards[:MAX_CARDS_SHOWN]:
-        box.add(Label(2, y, str(meta.get("name", path.stem)), Style(styles=["bold"])))
-        box.add(
-            Button(34, y, "Load").on_click(lambda _widget, path=path: on_load(path))
-        )
+        name = str(meta.get("name", path.stem))
+        box.add(Label(2, y, name, Style(styles=["bold"])))
         y += 1
-        box.add(Label(2, y, "─" * 24, muted))
+
+        def _rename_prompt(_widget, path=path, name=name):
+            app.prompt(
+                f"Rename '{name}' to",
+                initial=name,
+                on_submit=lambda new_name: on_rename(path, name, new_name),
+            )
+
+        def _duplicate_prompt(_widget, path=path, name=name):
+            app.prompt(
+                f"Duplicate '{name}' as",
+                initial=f"{name} copy",
+                on_submit=lambda new_name: on_duplicate(path, new_name),
+            )
+
+        def _delete_confirm(_widget, path=path, name=name):
+            app.confirm(
+                f"Delete '{name}'? This can't be undone.",
+                on_yes=lambda: on_delete(path, name),
+            )
+
+        box.add(Button(2, y, "Load").on_click(lambda _widget, path=path: on_load(path)))
+        box.add(Button(11, y, "Rename").on_click(_rename_prompt))
+        box.add(Button(22, y, "Duplicate").on_click(_duplicate_prompt))
+        box.add(Button(36, y, "Delete").on_click(_delete_confirm))
+        y += 1
+        box.add(Label(2, y, "─" * 30, muted))
         y += 1
         box.add(Label(2, y, f"🐠 {meta.get('fish', 0)} Fish"))
         y += 1
@@ -88,4 +122,34 @@ def build_start_menu(
     box.add(Button(2, 9, "Settings").on_click(lambda _w: on_settings()))
     box.add(Button(2, 11, "Help").on_click(lambda _w: on_help()))
     box.add(Button(2, 14, "Quit").on_click(lambda _w: app.quit()))
+    return box
+
+
+def build_pause_menu(
+    app,
+    on_resume: Callable[[], None],
+    on_save: Callable[[], None],
+    on_settings: Callable[[], None],
+    on_help: Callable[[], None],
+    on_quit: Callable[[], None],
+) -> Box:
+    """Esc opens this (see main()) instead of instantly quitting -- the
+    game genuinely freezes while it's open (every Fish/BubbleField checks
+    the same shared `paused` flag this menu flips), and Quit here asks for
+    confirmation first instead of a single accidental keypress destroying
+    an unsaved session."""
+    box = Box(0, 0, "320x260", title="Paused", border="rounded", style=app.style)
+    box.add(
+        Label(
+            2,
+            2,
+            "Game paused -- nothing is moving.",
+            Style(fg="bright_cyan", styles=["bold"]),
+        )
+    )
+    box.add(Button(2, 5, "Resume").on_click(lambda _w: on_resume()))
+    box.add(Button(2, 7, "Save").on_click(lambda _w: on_save()))
+    box.add(Button(2, 9, "Settings").on_click(lambda _w: on_settings()))
+    box.add(Button(2, 11, "Help").on_click(lambda _w: on_help()))
+    box.add(Button(2, 14, "Quit").on_click(lambda _w: on_quit()))
     return box

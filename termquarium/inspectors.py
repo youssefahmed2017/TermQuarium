@@ -4,7 +4,8 @@ small Box-building functions with no shared state between them."""
 from cozy_tui import Style
 from cozy_tui.widgets import Box, Button, Checkbox, Label
 
-from .fish import Fish
+from .fish import Fish, occupants_of
+from .relationships import relationship_state
 from .styles import HEART_STYLE, MUTED
 from .tank_objects import Decoration
 
@@ -16,29 +17,51 @@ def _build_inspector(app, f: Fish, on_rename, on_sell) -> Box:
     Shop's own money label, which likewise only updates on explicit actions.
     Sell asks for confirmation first (app.confirm(), stacked on top of this
     modal exactly like Rename's prompt already does) since it's the one
-    irreversible action here."""
+    irreversible action here.
+
+    "Home tonight" (only shown while actually housed) is deliberately
+    separate from "Favorite spot": the favorite spot is a permanent daytime
+    hangout picked once at birth, while a home is re-claimed fresh every
+    night (see Fish._claim_home()) and isn't always the favorite spot --
+    a fish can have one of each, or neither.
+
+    The relationship section (Step 8) never shows the raw score -- just
+    its state (relationship_state()) and its most recent reasons, straight
+    from that pair's shared memory log."""
     spot = (
         f.favorite_decoration.kind if f.favorite_decoration is not None else "none yet"
     )
-    box = Box(0, 0, "360x300", title=f.display_name, border="rounded", style=app.style)
+    box = Box(0, 0, "380x340", title=f.display_name, border="rounded", style=app.style)
     box.add(Label(2, 1, f"Species: {f.species_name}"))
     box.add(Label(2, 2, f"Age: {f.age_days:.1f} days ({f.growth_stage})"))
     box.add(Label(2, 3, f"Health: {f.health:.0f}%"))
     box.add(Label(2, 4, f"Hunger: {f.hunger:.0f}%"))
-    box.add(Label(2, 5, f"Personality: {f.personality}"))
+    personality_line = f"Personality: {f.personality}"
+    if f.is_sleepy:
+        personality_line += " (also Sleepy 😴)"
+    box.add(Label(2, 5, personality_line))
     box.add(Label(2, 6, f"Favorite spot: {spot}"))
+    y = 7
+    if f.sleeping_in is not None:
+        box.add(Label(2, y, f"Home tonight: {f.sleeping_in.kind} 😴"))
+        y += 1
+
+    def _add_bond(other, style):
+        nonlocal y
+        label, emoji = relationship_state(f.relationships[other].score)
+        box.add(Label(2, y, f"{label}: {other.display_name} {emoji}", style))
+        y += 1
+        for reason in f.relationships[other].memories[-2:]:
+            box.add(Label(4, y, f"- {reason}", MUTED))
+            y += 1
+
     if f.friend is not None:
-        box.add(Label(2, 7, f"Friend: {f.friend.display_name} ❤", HEART_STYLE))
+        _add_bond(f.friend, HEART_STYLE)
     if f.rival is not None:
-        box.add(
-            Label(
-                2,
-                8,
-                f"Rival: {f.rival.display_name} \U0001f620",
-                Style(fg="bright_red"),
-            )
-        )
-    box.add(Label(2, 9, f"Sell value: ${f.sell_value}"))
+        _add_bond(f.rival, Style(fg="bright_red"))
+
+    box.add(Label(2, y, f"Sell value: ${f.sell_value}"))
+    y += 2
 
     def _on_sell(_widget):
         app.confirm(
@@ -46,19 +69,39 @@ def _build_inspector(app, f: Fish, on_rename, on_sell) -> Box:
             on_yes=lambda: (on_sell(f), app.close_overlay(box)),
         )
 
-    box.add(Button(2, 11, "Rename").on_click(lambda _w: on_rename(f)))
-    box.add(Button(14, 11, "Sell").on_click(_on_sell))
-    box.add(Button(24, 11, "Close").on_click(lambda _w: app.close_overlay(box)))
+    box.add(Button(2, y, "Rename").on_click(lambda _w: on_rename(f)))
+    box.add(Button(14, y, "Sell").on_click(_on_sell))
+    box.add(Button(24, y, "Close").on_click(lambda _w: app.close_overlay(box)))
     return box
 
 
-def _build_decoration_inspector(app, d: Decoration, on_sell) -> Box:
+def _build_decoration_inspector(app, d: Decoration, fish, on_sell) -> Box:
     """Decorations are sellable too -- an emergency option (per the user's
     own framing: "instead of game over, I guess the castle has to go...")
     rather than just cosmetic. Sell asks for confirmation first, same
-    pattern as the Fish Inspector's Sell button."""
-    box = Box(0, 0, "300x160", title=d.kind, border="rounded", style=app.style)
-    box.add(Label(2, 1, f"Sell value: ${d.sell_value}"))
+    pattern as the Fish Inspector's Sell button.
+
+    Containers (capacity > 0, e.g. the Castle) also show who's sleeping
+    inside right now -- clicking one at night is the "enter the decoration"
+    moment: the fish tucked inside are invisible in the tank itself (see
+    Fish.draw()'s early return once _entered), so this is the only place to
+    actually see them until morning."""
+    box = Box(0, 0, "340x220", title=d.kind, border="rounded", style=app.style)
+    y = 1
+    if d.is_container:
+        occupants = occupants_of(d, fish)
+        box.add(Label(2, y, f"Capacity: {len(occupants)}/{d.capacity}"))
+        y += 1
+        if occupants:
+            for guest in occupants:
+                box.add(Label(2, y, f"😴 {guest.display_name}", MUTED))
+                y += 1
+        else:
+            box.add(Label(2, y, "(nobody home right now)", MUTED))
+            y += 1
+        y += 1
+    box.add(Label(2, y, f"Sell value: ${d.sell_value}"))
+    y += 2
 
     def _on_sell(_widget):
         app.confirm(
@@ -66,8 +109,8 @@ def _build_decoration_inspector(app, d: Decoration, on_sell) -> Box:
             on_yes=lambda: (on_sell(d), app.close_overlay(box)),
         )
 
-    box.add(Button(2, 3, "Sell").on_click(_on_sell))
-    box.add(Button(12, 3, "Close").on_click(lambda _w: app.close_overlay(box)))
+    box.add(Button(2, y, "Sell").on_click(_on_sell))
+    box.add(Button(12, y, "Close").on_click(lambda _w: app.close_overlay(box)))
     return box
 
 
