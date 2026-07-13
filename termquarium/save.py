@@ -193,3 +193,37 @@ def list_saves(home: Path | None = None) -> list[tuple[Path, dict[str, Any]]]:
         except (OSError, ValueError, json.JSONDecodeError):
             continue
     return sorted(cards, key=lambda card: card[1].get("last_played", ""), reverse=True)
+
+
+def _config_path(home: Path | None = None) -> Path:
+    ensure_data_dirs(home)
+    return data_dir(home) / "config.json"
+
+
+def load_cloud_key(home: Path | None = None) -> str | None:
+    """Return the Cloud Key set up for cloud saves on this machine, or
+    None if it's never been configured (or was deliberately forgotten)."""
+    try:
+        config = json.loads(_config_path(home).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    key = config.get("cloud_key")
+    return key if isinstance(key, str) and key else None
+
+
+def store_cloud_key(key: str | None, home: Path | None = None) -> None:
+    """Set (or, with key=None, forget) the Cloud Key in config.json.
+    Written atomically like write_save(), so an interrupted write can't
+    corrupt whatever else eventually lives alongside cloud_key here."""
+    path = _config_path(home)
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        config = {}
+    if key:
+        config["cloud_key"] = key
+    else:
+        config.pop("cloud_key", None)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)

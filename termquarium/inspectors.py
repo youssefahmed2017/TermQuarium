@@ -1,7 +1,7 @@
 """Fish/Decoration inspector panels, the Daily Summary, and Settings --
 small Box-building functions with no shared state between them."""
 
-from cozy_tui import Style
+from cozy_tui import Style, clipboard
 from cozy_tui.widgets import Box, Button, Checkbox, Label
 
 from .fish import Fish, occupants_of
@@ -131,7 +131,7 @@ def _build_daily_summary(
     box = Box(0, 0, "380x220", title=f"Day {day}", border="rounded", style=style)
     box.add(Label(2, 1, f"Visitors: {visitors}"))
     box.add(Label(2, 2, f"Ticket Sales: +${ticket_sales}", green))
-    box.add(Label(2, 3, f"Donations: +${donations}", green))
+    box.add(Label(2, 3, f"Donations Today: +${donations}", green))
     box.add(Label(2, 4, f"Maintenance Grant: +${grant}", green))
     box.add(Label(2, 5, f"Food Expenses: -${food_expense}", red))
     sign = (
@@ -148,11 +148,23 @@ def _build_daily_summary(
     return box
 
 
-def _build_settings(app, state) -> Box:
-    """Gameplay (Emergency Aquarium Welfare) and Display (ambient bubbles)
-    toggles. Checked state lives directly in `state`, the same dict
-    everything else in this economy reads/writes."""
-    box = Box(0, 0, "420x240", title="Settings", border="rounded", style=app.style)
+def _build_settings(
+    app,
+    state,
+    cloud_key,
+    on_setup_cloud,
+    on_change_key,
+    on_forget_key,
+    on_restore,
+) -> Box:
+    """Gameplay (Emergency Aquarium Welfare), Display (ambient bubbles), and
+    Cloud Saves. Checked state lives directly in `state`, the same dict
+    everything else in this economy reads/writes. `cloud_key` is a snapshot
+    at open-time (None if cloud saves has never been set up on this
+    machine); the four callbacks are aquarium.py's actual network/storage
+    actions -- this function only builds the box and closes itself before
+    handing off, so it doesn't need to know how any of them work."""
+    box = Box(0, 0, "440x340", title="Settings", border="rounded", style=app.style)
     box.add(Label(2, 1, "Gameplay", Style(styles=["bold"])))
 
     welfare_cb = Checkbox(
@@ -176,5 +188,33 @@ def _build_settings(app, state) -> Box:
     box.add(Label(2, 13, "Purely cosmetic rising bubbles. Turn off if you", MUTED))
     box.add(Label(2, 14, "find them distracting.", MUTED))
 
-    box.add(Button(2, 16, "Close").on_click(lambda _w: app.close_overlay(box)))
+    box.add(Label(2, 16, "Cloud Saves", Style(styles=["bold"])))
+
+    def _run_and_close(callback):
+        # Every cloud action needs this Settings box gone before it runs --
+        # setup/restore reopen a fresh Settings once they're done (so the
+        # key/key-less state shown here stays honest), and none of them
+        # should have to know this box exists to close it themselves.
+        def _handler(_w=None):
+            app.close_overlay(box)
+            callback()
+
+        return _handler
+
+    if cloud_key:
+        box.add(Label(2, 18, f"Key: {cloud_key}", MUTED))
+
+        def _copy(_w=None):
+            clipboard.copy(cloud_key)
+            app.toast("Cloud Key copied.", level="success")
+
+        box.add(Button(2, 20, "Copy Key").on_click(_copy))
+        box.add(Button(16, 20, "Use a Different Key").on_click(_run_and_close(on_change_key)))
+        box.add(Button(2, 22, "Restore My Saves").on_click(_run_and_close(on_restore)))
+        box.add(Button(22, 22, "Forget Key").on_click(_run_and_close(on_forget_key)))
+    else:
+        box.add(Label(2, 18, "Not set up yet -- saves stay local only.", MUTED))
+        box.add(Button(2, 20, "Set Up Cloud Saves").on_click(_run_and_close(on_setup_cloud)))
+
+    box.add(Button(2, 24, "Close").on_click(lambda _w: app.close_overlay(box)))
     return box

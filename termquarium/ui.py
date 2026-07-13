@@ -82,6 +82,40 @@ def build_save_menu(
     return box
 
 
+def build_restore_menu(
+    app, cloud_saves: list[dict], on_download: Callable[[str], None]
+) -> Box:
+    """Cloud Saves' "Restore My Saves" list -- deliberately simpler than
+    build_save_menu()'s cards (no rename/duplicate/delete: those already
+    exist for local saves once a cloud save is downloaded and shows up in
+    the normal Load menu). Each entry is `{"name": ..., "metadata": ...}`
+    from cloud.list_cloud_saves(), the same metadata shape write_save()
+    already produces locally."""
+    muted = Style(fg="bright_black")
+    box = Box(0, 0, "460x360", title="Restore My Saves", border="rounded", style=app.style)
+    if not cloud_saves:
+        box.add(Label(2, 2, "No cloud saves found for this key.", muted))
+    y = 2
+    for entry in cloud_saves[:MAX_CARDS_SHOWN]:
+        name = entry.get("name", "Untitled Aquarium")
+        meta = entry.get("metadata", {})
+        box.add(Label(2, y, name, Style(styles=["bold"])))
+        y += 1
+        box.add(
+            Button(2, y, "Download").on_click(
+                lambda _w, name=name: on_download(name)
+            )
+        )
+        y += 1
+        played = format_relative_time(meta.get("last_played", ""))
+        box.add(
+            Label(2, y, f"🐠 {meta.get('fish', 0)} Fish · Day {meta.get('day', 0)} · {played}", muted)
+        )
+        y += 2
+    box.add(Button(2, y, "Close").on_click(lambda _w: app.close_overlay(box)))
+    return box
+
+
 def build_help_menu(app) -> Box:
     """A compact in-game controls reference, reachable from the start menu."""
     muted = Style(fg="bright_black")

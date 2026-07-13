@@ -195,6 +195,7 @@ from examples.aquarium.termquarium.economy import (
     compute_visitor_income,
     decay_hunger,
     feed,
+    roll_visitor_donation,
     should_grant_welfare,
     should_warn_hungry,
 )
@@ -229,12 +230,21 @@ from examples.aquarium.termquarium.relationships import (
     roll_is_sleepy,
     set_relationship,
 )
+from examples.aquarium.termquarium.cloud import (
+    delete_cloud_save,
+    download_save as download_cloud_save,
+    generate_cloud_key,
+    list_cloud_saves,
+    upload_save as upload_cloud_save,
+)
 from examples.aquarium.termquarium.save import (
     delete_save,
     duplicate_save,
     list_saves,
+    load_cloud_key,
     read_save,
     rename_save,
+    store_cloud_key,
     write_save,
 )
 from examples.aquarium.termquarium.shop import build_shop as _build_shop
@@ -256,6 +266,7 @@ from examples.aquarium.termquarium.tank_objects import Decoration, Food, decorat
 from examples.aquarium.termquarium.ui import (
     build_help_menu,
     build_pause_menu,
+    build_restore_menu,
     build_save_menu,
     build_start_menu,
 )
@@ -305,11 +316,17 @@ def main() -> None:
         "money": 120,
         "food": 15,
         "food_spent_today": 0,
+        "donations_today": 0,
         "welfare_enabled": True,
         "bubbles_enabled": True,
     }
     hungry_warning_active = {"value": False}
     day_count = {"n": 0}
+    # None until Cloud Saves is set up (or restored via an existing key) on
+    # this machine -- see _open_settings()'s Cloud Saves section. Kept
+    # separate from `state`/save snapshots deliberately: the key lives with
+    # the *machine*, not with any one aquarium's save file.
+    cloud = {"key": load_cloud_key()}
     # Name of the save this session is currently "attached to" -- None until
     # the player has either loaded or manually saved once. Once set, Save
     # (P) writes straight back into that same save instead of prompting for
@@ -602,7 +619,13 @@ def main() -> None:
         decorations.clear()
         state.clear()
         state.update(
-            {"money": 120, "food": 15, "food_spent_today": 0, "welfare_enabled": True}
+            {
+                "money": 120,
+                "food": 15,
+                "food_spent_today": 0,
+                "donations_today": 0,
+                "welfare_enabled": True,
+            }
         )
         state.update(snapshot.get("state", {}))
         day_count["n"] = int(snapshot.get("day", 0))
@@ -701,9 +724,23 @@ def main() -> None:
         )
 
     def _write_named_save(name: str) -> None:
-        path = write_save(name, _snapshot())
+        payload_path = write_save(name, _snapshot())
         current_save["name"] = name
-        app.toast(f"Saved {path.stem}.", level="success")
+        app.toast(f"Saved {payload_path.stem}.", level="success")
+        if cloud["key"] is not None:
+            # Fire-and-forget: the local save above already succeeded and
+            # is what Load reads from, so a slow/failed cloud sync should
+            # never block or roll back the (already-real) local save.
+            app.run_worker(
+                upload_cloud_save,
+                cloud["key"],
+                name,
+                read_save(payload_path),
+                on_result=lambda _r: app.toast("Synced to cloud.", level="success"),
+                on_error=lambda _e: app.toast(
+                    "Cloud sync failed -- saved locally only.", level="warning"
+                ),
+            )
 
     def _open_load_menu(on_loaded=None) -> None:
         cards = list_saves()
@@ -761,7 +798,92 @@ def main() -> None:
         )
 
     def _open_settings():
-        app.open_overlay(_build_settings(app, state), close_on_click_outside=True)
+        def _setup_cloud():
+            key = generate_cloud_key()
+            cloud["key"] = key
+            store_cloud_key(key)
+            app.toast(
+                f"Cloud Saves set up. Your key: {key} -- write it down, it's "
+                "the only way to get your saves back on a new PC.",
+                level="info",
+                duration=8.0,
+            )
+            _open_settings()
+
+        def _change_key():
+            def _use_key(entered: str):
+                entered = entered.strip()
+                if not entered:
+                    return
+                cloud["key"] = entered
+                store_cloud_key(entered)
+                app.toast("Cloud Key updated.", level="success")
+                _open_settings()
+
+            app.prompt("Enter an existing Cloud Key", on_submit=_use_key)
+
+        def _forget_key():
+            def _yes():
+                cloud["key"] = None
+                store_cloud_key(None)
+                app.toast(
+                    "Cloud Key forgotten -- saves stay local only now.", level="info"
+                )
+                _open_settings()
+
+            app.confirm(
+                "Forget this Cloud Key? Local saves are untouched, but this "
+                "machine won't sync to the cloud until you set one up again.",
+                on_yes=_yes,
+            )
+
+        def _restore():
+            key = cloud["key"]
+            if key is None:
+                return
+
+            def _download(name: str) -> None:
+                def _on_downloaded(payload):
+                    write_save(name, payload["aquarium"])
+                    app.toast(f"Downloaded {name} -- find it in Load.", level="success")
+
+                app.run_worker(
+                    download_cloud_save,
+                    key,
+                    name,
+                    on_result=_on_downloaded,
+                    on_error=lambda error: app.toast(
+                        f"Couldn't download: {error}", level="error"
+                    ),
+                )
+
+            def _on_listed(cloud_saves):
+                app.open_overlay(
+                    build_restore_menu(app, cloud_saves, _download),
+                    close_on_click_outside=True,
+                )
+
+            app.run_worker(
+                list_cloud_saves,
+                key,
+                on_result=_on_listed,
+                on_error=lambda error: app.toast(
+                    f"Couldn't reach the cloud: {error}", level="error"
+                ),
+            )
+
+        app.open_overlay(
+            _build_settings(
+                app,
+                state,
+                cloud["key"],
+                _setup_cloud,
+                _change_key,
+                _forget_key,
+                _restore,
+            ),
+            close_on_click_outside=True,
+        )
 
     def _open_help():
         app.open_overlay(build_help_menu(app), close_on_click_outside=True)
@@ -1043,6 +1165,18 @@ def main() -> None:
             hungry_warning_active["value"] = False
         _check_emergency_welfare()
 
+        # Visitor donations pay out the moment they happen instead of being
+        # bundled into the once-a-day summary -- see roll_visitor_donation()
+        # for why this fires at roughly the same daily rate as before.
+        attractiveness = compute_attractiveness(fish, decorations, foods)
+        visitors = attractiveness // VISITORS_PER_ATTRACTIVENESS
+        donation = roll_visitor_donation(visitors)
+        if donation:
+            state["money"] += donation
+            state["donations_today"] += donation
+            _refresh_stats()
+            app.toast(f"A visitor donated ${donation}!", level="info")
+
     def _try_breeding():
         if len(fish) >= MAX_FISH_FOR_BREEDING:
             return
@@ -1092,11 +1226,17 @@ def main() -> None:
         decay_relationships(fish)
         _try_breeding()
         attractiveness = compute_attractiveness(fish, decorations, foods)
-        visitors, ticket_sales, donations = compute_visitor_income(attractiveness)
+        # Donations were already paid out (and toasted) second by second in
+        # _per_second_tick as they happened -- only ticket sales and the
+        # maintenance grant are new money here. `donations` is still read
+        # from state for the summary below, then reset for the next day.
+        visitors, ticket_sales, _donations = compute_visitor_income(attractiveness)
         grant = MAINTENANCE_GRANT
         food_expense = state["food_spent_today"]
+        donations = state["donations_today"]
         state["food_spent_today"] = 0
-        state["money"] += ticket_sales + donations + grant
+        state["donations_today"] = 0
+        state["money"] += ticket_sales + grant
         net = ticket_sales + donations + grant - food_expense
         _refresh_stats()
 
