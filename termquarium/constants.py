@@ -7,19 +7,57 @@ from collections import namedtuple
 HUNGER_WARNING_THRESHOLD = 50.0
 # name, right-facing glyph, left-facing glyph (hand-mirrored rather than
 # auto-flipped so each species still looks recognizable facing the other
-# way, not just a reversed string), color, shop price, predator flag.
-Species = namedtuple("Species", "name right left color price predator")
+# way, not just a reversed string), color, shop price, predator flag,
+# favorite treat kinds (TREAT_SHOP_ITEMS kinds this species reacts to with
+# extra delight when fed -- see aquarium.py's _feed_treat -- defaulted to ()
+# since only Axolotl has any today; never a stat bonus, just a nicer toast).
+Species = namedtuple(
+    "Species", "name right left color price predator favorite_foods", defaults=[()]
+)
 
 SHOP_ITEMS = [
     Species("Goldfish", "><>", "<><", "bright_yellow", 20, False),
     Species("Angelfish", "><(((°>", "<°)))><", "bright_cyan", 40, False),
     Species("Betta", "><{{{°>", "<°}}}><", "bright_red", 55, False),
     Species("Shark", "▶===>", "<===◀", "white", 500, True),
+    # Not "fish with 20 unique mechanics" -- a delightful new resident that
+    # reuses Fish entirely (same growth/hunger/relationships/container-
+    # sleeping as everything else) with a few small, personality-flavored
+    # differences instead of any stat advantage: priced between Angelfish
+    # and Betta (deliberately unremarkable), and it has favorite foods that
+    # give the Treats system somewhere new to matter (see _feed_treat).
+    Species(
+        "Axolotl",
+        "(°.°)~",
+        "~(°.°)",
+        "bright_magenta",
+        45,
+        False,
+        ("Brine Shrimp", "Bloodworms", "Worms"),
+    ),
 ]
 STARTER_SPECIES = [s for s in SHOP_ITEMS if not s.predator]
 
 FOOD_PACK_SIZE = 20
 FOOD_PACK_PRICE = 5
+
+# Treats -- unlike Fish Food (dropped in the water, eaten by whoever gets
+# there first), each of these is fed directly to one chosen fish (see the
+# Fish Inspector's "Feed a Treat"). Same economy.feed() relief as regular
+# food, deliberately no bigger number for feeding one -- these are about
+# personality, not a better stat stick. Bought in small packs like Fish
+# Food, except Pizza: a single-serving purchase on purpose, so it stays
+# the rare, deliberate "it's a special occasion" treat rather than
+# something you stock up five at a time. Nobody has Pizza as a declared
+# favorite -- every fish is just delighted by it anyway.
+FoodItem = namedtuple("FoodItem", "kind emoji price pack_size flavor_text")
+TREAT_SHOP_ITEMS = [
+    FoodItem("Brine Shrimp", "🦐", 10, 5, "A fish tank classic."),
+    FoodItem("Worms", "🪱", 8, 5, "Simple, and they know it."),
+    FoodItem("Bloodworms", "🩸", 12, 5, "A little extra excitement at feeding time."),
+    FoodItem("Plankton", "🦠", 9, 5, "Barely a mouthful, gone in a second."),
+    FoodItem("Pizza", "🍕", 12, 1, "Nobody knows why fish love this so much."),
+]
 
 # A fish gets exactly one of these (see random_personality()), not a
 # checklist of independent traits:
@@ -98,6 +136,17 @@ RELAX_STEER_RATE = 1.5  # blend rate toward the favorite spot while relaxing
 # once inside its influence. This margin sits just outside it instead.
 RELAX_ARRIVE_MARGIN = 1.0  # cells, added on top of a spot's radius + AVOID_MARGIN
 IDLE_DAMPING = 0.9  # velocity multiplier per frame once idling at the favorite spot
+
+# Axolotl-specific: real axolotls spend much of their time resting on the
+# substrate rather than swimming constantly -- reuses the exact same relax
+# mechanic above (favorite_decoration, RELAX_CHECK_MIN/MAX roll cadence),
+# just tuned to trigger far more often and hold much longer, so it visibly
+# reads as "calmer" than any fish rather than needing a whole new idle
+# system. See Fish._glyph() for the resting-glyph swap that goes with it.
+AXOLOTL_RELAX_CHANCE = 0.75
+AXOLOTL_RELAX_DURATION_MIN = 12.0
+AXOLOTL_RELAX_DURATION_MAX = 25.0
+AXOLOTL_RESTING_GLYPH = "(-.-)~"  # closed-eyes, shown only while relaxing
 
 # Each decoration's `art` is real (plain-character) ASCII art, not emoji --
 # an emoji glyph is drawn by the terminal's own emoji font and mostly ignores
@@ -297,12 +346,35 @@ MORNING_VIGNETTE_FRAME_SECONDS = 1.5
 
 # Sleepy: an independent yes/no trait (not one of the mutually-exclusive
 # PERSONALITIES) rolled once at birth alongside the regular personality --
-# a fish can be e.g. "Greedy" and Sleepy at once. A normal boop practically
-# never wakes a Sleepy fish (see choose_morning_vignette()): the vignette's
-# sleeper role resists almost every time instead of waking, occasionally
-# resolving as the waker just leaving, same as a non-Sleepy fish can.
+# a fish can be e.g. "Greedy" and Sleepy at once. A Sleepy fish genuinely
+# stays asleep past the normal Night->Morning transition (see
+# Fish._holding_asleep) until a real wake attempt from an eligible
+# tankmate succeeds -- see relationships.roll_wake_threshold() and
+# resolve_wake_attempt(). Never permanently stuck: SLEEPY_HOLD_MAX_SECONDS
+# is the fallback for when nobody eligible is even there to try.
 SLEEPY_CHANCE = 0.2
-SLEEPY_RESIST_CHANCE = 0.8  # of the "sleeper is Sleepy" cases, how many resist outright
+SLEEPY_RESIST_CHANCE = 0.5  # per-attempt chance a Sleepy fish resists a wake try
+
+# How many failed attempts a Sleepy fish can resist before the *next* one
+# succeeds unconditionally, randomized once per holding period from a
+# range keyed by the attempting tankmate's relationship tier. Only Friend
+# (Friend/Best Friend) and Neutral tiers ever attempt at all -- a Rival or
+# a fish that Dislikes the sleeper doesn't bother.
+WAKE_CHANCES_FRIEND = (3, 5)
+WAKE_CHANCES_NEUTRAL = (4, 6)
+WAKE_ATTEMPT_INTERVAL_SECONDS = 4.0  # how often an assigned tankmate retries
+SLEEPY_HOLD_MAX_SECONDS = 60.0  # forced wake fallback with no eligible tankmate
+
+# A woken fish doesn't instantly vanish from its container -- it lingers
+# here, still tucked in/invisible from the open tank (Fish._entered stays
+# True), but shown awake (see Fish._awake_in_home) rather than asleep in
+# the Castle Interior view, before it actually leaves.
+WAKE_LINGER_SECONDS = 6.0
+
+# How long a wake attempt's "*boop*" replaces the waker's mood emoji in
+# the Castle Interior view -- fires for every attempt (resisted or not),
+# so a Sleepy fish's several chances all read as real, visible tries.
+BOOP_FLASH_SECONDS = 2.0
 
 # Phase 6: polish + stress test. The dev/debug key mass-spawns free starter
 # fish up to this many total, to prove the diff-renderer stays smooth with

@@ -1,20 +1,28 @@
 """Fish/Decoration inspector panels, the Daily Summary, and Settings --
 small Box-building functions with no shared state between them."""
 
+import time
+
 from cozy_tui import Style, clipboard
 from cozy_tui.widgets import Box, Button, Checkbox, Label
 
+from .constants import TREAT_SHOP_ITEMS
 from .fish import Fish, occupants_of
 from .relationships import relationship_state
 from .styles import HEART_STYLE, MUTED
 from .tank_objects import Decoration
 
 
-def _build_inspector(app, f: Fish, on_rename, on_sell) -> Box:
+def _build_inspector(app, f: Fish, on_rename, on_sell, treats, on_feed_treat) -> Box:
     """A read-only stat card for one Fish (name/species/age+growth/health/
-    hunger/personality/favorite spot/sell value) with Rename and Sell
-    buttons. A snapshot at open-time, not live-refreshing -- matching the
-    Shop's own money label, which likewise only updates on explicit actions.
+    hunger/personality/favorite spot/favorite foods/sell value) with Rename
+    and Sell buttons. A snapshot at open-time, not live-refreshing --
+    matching the Shop's own money label, which likewise only updates on
+    explicit actions.
+
+    "Favorite foods" (only shown for a species that has any, e.g. Axolotl)
+    is a hint, not a requirement -- feeding any treat still works the same,
+    a favorite just earns a nicer toast (see aquarium.py's _feed_treat).
     Sell asks for confirmation first (app.confirm(), stacked on top of this
     modal exactly like Rename's prompt already does) since it's the one
     irreversible action here.
@@ -27,11 +35,17 @@ def _build_inspector(app, f: Fish, on_rename, on_sell) -> Box:
 
     The relationship section (Step 8) never shows the raw score -- just
     its state (relationship_state()) and its most recent reasons, straight
-    from that pair's shared memory log."""
+    from that pair's shared memory log.
+
+    `treats` is the shared `state["treats"]` stock dict -- a "Feed a
+    Treat" row appears only for kinds actually in stock (bought from the
+    Shop), one button each. Feeding applies the same economy.feed() relief
+    regular food gives (deliberately no bonus for a treat -- see
+    constants.TREAT_SHOP_ITEMS) and closes this Inspector, same as Sell."""
     spot = (
         f.favorite_decoration.kind if f.favorite_decoration is not None else "none yet"
     )
-    box = Box(0, 0, "380x340", title=f.display_name, border="rounded", style=app.style)
+    box = Box(0, 0, "380x440", title=f.display_name, border="rounded", style=app.style)
     box.add(Label(2, 1, f"Species: {f.species_name}"))
     box.add(Label(2, 2, f"Age: {f.age_days:.1f} days ({f.growth_stage})"))
     box.add(Label(2, 3, f"Health: {f.health:.0f}%"))
@@ -42,6 +56,12 @@ def _build_inspector(app, f: Fish, on_rename, on_sell) -> Box:
     box.add(Label(2, 5, personality_line))
     box.add(Label(2, 6, f"Favorite spot: {spot}"))
     y = 7
+    if f.favorite_foods:
+        emojis = " ".join(
+            item.emoji for item in TREAT_SHOP_ITEMS if item.kind in f.favorite_foods
+        )
+        box.add(Label(2, y, f"Favorite foods: {emojis}"))
+        y += 1
     if f.sleeping_in is not None:
         box.add(Label(2, y, f"Home tonight: {f.sleeping_in.kind} 😴"))
         y += 1
@@ -63,6 +83,22 @@ def _build_inspector(app, f: Fish, on_rename, on_sell) -> Box:
     box.add(Label(2, y, f"Sell value: ${f.sell_value}"))
     y += 2
 
+    in_stock = [item for item in TREAT_SHOP_ITEMS if treats.get(item.kind, 0) > 0]
+    if in_stock:
+        box.add(Label(2, y, "Feed a Treat", Style(styles=["bold"])))
+        y += 1
+        for item in in_stock:
+            box.add(
+                Button(2, y, f"{item.emoji} {item.kind} ({treats[item.kind]})").on_click(
+                    lambda _w, kind=item.kind: (
+                        on_feed_treat(f, kind),
+                        app.close_overlay(box),
+                    )
+                )
+            )
+            y += 1
+        y += 1
+
     def _on_sell(_widget):
         app.confirm(
             f"Sell {f.display_name} for ${f.sell_value}?",
@@ -75,17 +111,17 @@ def _build_inspector(app, f: Fish, on_rename, on_sell) -> Box:
     return box
 
 
-def _build_decoration_inspector(app, d: Decoration, fish, on_sell) -> Box:
+def _build_decoration_inspector(app, d: Decoration, fish, on_sell, on_enter) -> Box:
     """Decorations are sellable too -- an emergency option (per the user's
     own framing: "instead of game over, I guess the castle has to go...")
     rather than just cosmetic. Sell asks for confirmation first, same
     pattern as the Fish Inspector's Sell button.
 
     Containers (capacity > 0, e.g. the Castle) also show who's sleeping
-    inside right now -- clicking one at night is the "enter the decoration"
-    moment: the fish tucked inside are invisible in the tank itself (see
-    Fish.draw()'s early return once _entered), so this is the only place to
-    actually see them until morning."""
+    inside right now, plus an "Enter {kind}" button into the dedicated,
+    quieter Castle Interior view (_build_castle_interior) -- a deliberate
+    choice to actually go look, rather than this stat list being the only
+    way to see them."""
     box = Box(0, 0, "340x220", title=d.kind, border="rounded", style=app.style)
     y = 1
     if d.is_container:
@@ -99,7 +135,12 @@ def _build_decoration_inspector(app, d: Decoration, fish, on_sell) -> Box:
         else:
             box.add(Label(2, y, "(nobody home right now)", MUTED))
             y += 1
-        y += 1
+        box.add(
+            Button(2, y, f"Enter {d.kind}").on_click(
+                lambda _w: (app.close_overlay(box), on_enter(d))
+            )
+        )
+        y += 2
     box.add(Label(2, y, f"Sell value: ${d.sell_value}"))
     y += 2
 
@@ -111,6 +152,62 @@ def _build_decoration_inspector(app, d: Decoration, fish, on_sell) -> Box:
 
     box.add(Button(2, y, "Sell").on_click(_on_sell))
     box.add(Button(12, y, "Close").on_click(lambda _w: app.close_overlay(box)))
+    return box
+
+
+def _build_castle_interior(app, d: Decoration, fish) -> Box:
+    """The "Enter {kind}" destination: a quiet, read-only look at whoever's
+    sleeping inside right now, laid out as beds of two -- pillows (⬜) and
+    all, per the user's own ASCII language for this. Deliberately reached
+    by choice from the Decoration Inspector, not shoved in the player's
+    face; deliberately read-only (no Sell/Rename here) since this is for
+    watching, not managing. Leave just closes like any other Inspector's
+    Close button -- cleanup (canceling the live-refresh timer, see
+    aquarium.py's _enter_decoration()) is wired through open_overlay's own
+    on_close hook instead, so it fires no matter how this gets dismissed
+    (Leave, click-outside, Esc), not only the one button.
+
+    Fish are shown as a generic "🐠 Name 😴"/"🐠 Name 🙂", not each fish's
+    species glyph -- the glyph is for open-water movement/direction, this
+    is a name-forward "who's home" list. A woken fish doesn't vanish the
+    instant it wakes: it lingers here, shown 🙂 (see fish.py's
+    _awake_in_home / WAKE_LINGER_SECONDS), before actually leaving --
+    and the whole room leaves together once everyone's awake
+    (Fish._roommates_ready_to_leave()), not one at a time. Mid wake
+    attempt, the attempting fish's mood is replaced by "*boop*" for
+    BOOP_FLASH_SECONDS (set in aquarium.py's _process_sleepy_holds(), for
+    every attempt -- resisted or not). aquarium.py's _enter_decoration()
+    re-opens this same box on a timer while it's up so none of this goes
+    stale while the player's watching."""
+    occupants = occupants_of(d, fish)
+    now = time.monotonic()
+    beds = -(-d.capacity // 2)  # ceil division; today's containers are even
+    box = Box(
+        0, 0, "380x300", title=f"{d.kind} Interior", border="rounded", style=app.style
+    )
+    y = 1
+    slot = 0
+    for _ in range(beds):
+        box.add(Label(2, y, "-" * 16, MUTED))
+        y += 1
+        for _ in range(min(2, d.capacity - slot)):
+            if slot < len(occupants):
+                guest = occupants[slot]
+                if (
+                    guest._just_booped_until is not None
+                    and now < guest._just_booped_until
+                ):
+                    mood = "*boop*"
+                else:
+                    mood = "🙂" if guest._awake_in_home else "😴"
+                box.add(Label(2, y, f"⬜ 🐠 {guest.display_name} {mood}"))
+            else:
+                box.add(Label(2, y, "⬜ (empty)", MUTED))
+            slot += 1
+            y += 1
+        box.add(Label(2, y, "-" * 16, MUTED))
+        y += 2
+    box.add(Button(2, y, "Leave").on_click(lambda _w: app.close_overlay(box)))
     return box
 
 
@@ -209,12 +306,18 @@ def _build_settings(
             app.toast("Cloud Key copied.", level="success")
 
         box.add(Button(2, 20, "Copy Key").on_click(_copy))
-        box.add(Button(16, 20, "Use a Different Key").on_click(_run_and_close(on_change_key)))
+        box.add(
+            Button(16, 20, "Use a Different Key").on_click(
+                _run_and_close(on_change_key)
+            )
+        )
         box.add(Button(2, 22, "Restore My Saves").on_click(_run_and_close(on_restore)))
         box.add(Button(22, 22, "Forget Key").on_click(_run_and_close(on_forget_key)))
     else:
         box.add(Label(2, 18, "Not set up yet -- saves stay local only.", MUTED))
-        box.add(Button(2, 20, "Set Up Cloud Saves").on_click(_run_and_close(on_setup_cloud)))
+        box.add(
+            Button(2, 20, "Set Up Cloud Saves").on_click(_run_and_close(on_setup_cloud))
+        )
 
     box.add(Button(2, 24, "Close").on_click(lambda _w: app.close_overlay(box)))
     return box

@@ -92,7 +92,9 @@ def build_restore_menu(
     from cloud.list_cloud_saves(), the same metadata shape write_save()
     already produces locally."""
     muted = Style(fg="bright_black")
-    box = Box(0, 0, "460x360", title="Restore My Saves", border="rounded", style=app.style)
+    box = Box(
+        0, 0, "460x360", title="Restore My Saves", border="rounded", style=app.style
+    )
     if not cloud_saves:
         box.add(Label(2, 2, "No cloud saves found for this key.", muted))
     y = 2
@@ -102,14 +104,17 @@ def build_restore_menu(
         box.add(Label(2, y, name, Style(styles=["bold"])))
         y += 1
         box.add(
-            Button(2, y, "Download").on_click(
-                lambda _w, name=name: on_download(name)
-            )
+            Button(2, y, "Download").on_click(lambda _w, name=name: on_download(name))
         )
         y += 1
         played = format_relative_time(meta.get("last_played", ""))
         box.add(
-            Label(2, y, f"🐠 {meta.get('fish', 0)} Fish · Day {meta.get('day', 0)} · {played}", muted)
+            Label(
+                2,
+                y,
+                f"🐠 {meta.get('fish', 0)} Fish · Day {meta.get('day', 0)} · {played}",
+                muted,
+            )
         )
         y += 2
     box.add(Button(2, y, "Close").on_click(lambda _w: app.close_overlay(box)))
@@ -140,8 +145,14 @@ def build_start_menu(
     on_load: Callable[[], None],
     on_settings: Callable[[], None],
     on_help: Callable[[], None],
+    on_resume: Callable[[], None] | None = None,
 ) -> Box:
-    """The first screen shown for every session."""
+    """The first screen shown for every session -- and, since Ctrl+C now
+    reaches this same menu mid-session too (see aquarium.py's
+    _return_to_main_menu()), optionally a way back out of it. `on_resume`
+    is only ever passed in that mid-session case; boot's own call leaves
+    it None, so there's nothing to resume to and no button appears --
+    identical to before this existed."""
     box = Box(0, 0, "360x260", title="TermQuarium", border="rounded", style=app.style)
     box.add(
         Label(
@@ -151,11 +162,15 @@ def build_start_menu(
             Style(fg="bright_cyan", styles=["bold"]),
         )
     )
-    box.add(Button(2, 5, "New Aquarium").on_click(lambda _w: on_new()))
-    box.add(Button(2, 7, "Load Save").on_click(lambda _w: on_load()))
-    box.add(Button(2, 9, "Settings").on_click(lambda _w: on_settings()))
-    box.add(Button(2, 11, "Help").on_click(lambda _w: on_help()))
-    box.add(Button(2, 14, "Quit").on_click(lambda _w: app.quit()))
+    y = 5
+    if on_resume is not None:
+        box.add(Button(2, y, "Resume").on_click(lambda _w: on_resume()))
+        y += 2
+    box.add(Button(2, y, "New Aquarium").on_click(lambda _w: on_new()))
+    box.add(Button(2, y + 2, "Load Save").on_click(lambda _w: on_load()))
+    box.add(Button(2, y + 4, "Settings").on_click(lambda _w: on_settings()))
+    box.add(Button(2, y + 6, "Help").on_click(lambda _w: on_help()))
+    box.add(Button(2, y + 9, "Quit").on_click(lambda _w: app.quit()))
     return box
 
 

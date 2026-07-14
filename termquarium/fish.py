@@ -12,6 +12,10 @@ from cozy_tui.widget import Widget
 from .constants import (
     AVOID_MARGIN,
     AVOID_STEER_RATE,
+    AXOLOTL_RELAX_CHANCE,
+    AXOLOTL_RELAX_DURATION_MAX,
+    AXOLOTL_RELAX_DURATION_MIN,
+    AXOLOTL_RESTING_GLYPH,
     EXPLORER_HOME_SHUFFLE_CHANCE,
     FLEE_STEER_RATE,
     FOLLOW_MOUSE_RATE,
@@ -60,6 +64,7 @@ from .constants import (
     SLEEP_STEER_RATE,
     SOCIAL_STEER_RATE,
     AGE_SECONDS_PER_DAY,
+    WAKE_LINGER_SECONDS,
     Species,
 )
 from .economy import feed
@@ -102,6 +107,7 @@ class Fish(Widget):
         price: int = 0,
         environment=None,
         paused=None,
+        favorite_foods=(),
     ):
         super().__init__(round(x), round(y), Style(fg=color), name="Fish")
         self.fx, self.fy = float(x), float(y)
@@ -125,6 +131,10 @@ class Fish(Widget):
         self.species_name = species_name
         self.display_name = species_name  # renameable -- see _rename_fish() in main()
         self.price = price  # this species' Shop price -- sell_value scales off it by growth stage
+        # Treat kinds (TREAT_SHOP_ITEMS) this species is delighted by -- see
+        # aquarium.py's _feed_treat. Flavor only: same economy.feed() relief
+        # either way, just a nicer toast, never a bigger number.
+        self.favorite_foods = favorite_foods
         self.mouse_pos = mouse_pos  # shared {"x":.., "y":..} dict, or None
         self.personality = random_personality()
         # Independent of (and stackable with) personality -- see
@@ -149,11 +159,44 @@ class Fish(Widget):
         # arrived inside (not just still swimming toward it) -- see draw().
         self.sleeping_in = None
         self._entered = False
+        # A Sleepy fish can stay genuinely asleep past the normal
+        # Night->Morning transition, pending a real wake attempt from an
+        # eligible tankmate (see aquarium.py's _per_second_tick and
+        # relationships.find_eligible_waker()/resolve_wake_attempt()).
+        # Everyone else is entirely unaffected -- these only ever get set
+        # for a Sleepy fish that would otherwise have woken.
+        self._holding_asleep = False
+        self._wake_attempts_used = 0
+        self._wake_threshold = None
+        self._held_since = None
+        self._wake_waker = None  # the tankmate assigned to attempt waking it
+        self._wake_next_attempt = None  # monotonic() time of the next try
+        # Any fish (Sleepy or not) lingers in its container a moment after
+        # waking -- still tucked in/invisible in the open tank (_entered
+        # stays True), but shown awake rather than asleep wherever
+        # occupants_of() is read (the Castle Interior view) until
+        # WAKE_LINGER_SECONDS actually passes and it leaves for real.
+        self._awake_in_home = False
+        self._wake_time = None
+        # Set by aquarium.py's _process_sleepy_holds() on every wake
+        # attempt this fish makes (resisted or not) -- a monotonic()
+        # deadline the Castle Interior view shows "*boop*" until, in place
+        # of this fish's normal mood emoji.
+        self._just_booped_until = None
         self.speed = random.uniform(MIN_SPEED, MAX_SPEED)
         self.vx, self.vy = random_velocity(self._effective_speed())
         self.hunger = 0.0  # 0 = full, 100 = starving
         self.health = 100.0
         self.birth_time = time.monotonic()
+        if self.is_predator:
+            # A predator is never bred and never a starter (both exclude
+            # predators -- see STARTER_SPECIES/find_breeding_pairs()), so
+            # every Shark that will ever exist comes from a Shop purchase.
+            # Buying one for $500 to watch it show up as a generic "o>"
+            # baby blob undercuts the whole point -- it starts already
+            # Adult: full glyph, full hunting speed, hunting immediately.
+            adult_age_days = GROWTH_STAGES[-1][1]
+            self.birth_time -= AGE_SECONDS_PER_DAY * (adult_age_days + 0.5)
         self._last = time.monotonic()
         self._next_turn = self._last + random.uniform(MIN_TURN_DELAY, MAX_TURN_DELAY)
         self._relaxing_until = 0.0
@@ -239,8 +282,11 @@ class Fish(Widget):
         """(x, y, vx, vy) for same-species, non-predator fish within
         SCHOOL_RADIUS -- schooling is a species trait (real fish shoal with
         their own kind), not a personality one like Friendly's group pull,
-        and predators (Sharks) hunt alone rather than schooling."""
-        if self.is_predator:
+        and predators (Sharks) hunt alone rather than schooling. Axolotls
+        don't school either, even with each other -- solitary/independent
+        is part of what makes them feel different from the fish species,
+        not a stat difference."""
+        if self.is_predator or self.species_name == "Axolotl":
             return []
         return [
             (o.fx, o.fy, o.vx, o.vy)
@@ -255,6 +301,17 @@ class Fish(Widget):
         return sum(
             1 for f in self.fish_list if f is not self and f.sleeping_in is decoration
         )
+
+    def _roommates_ready_to_leave(self) -> bool:
+        """Every fish sharing this home (including self) has to be awake
+        and lingering -- a still-asleep/held roommate means nobody leaves
+        yet -- and enough time has to have passed since the *last* of them
+        woke, not just this one, so the whole room empties together."""
+        roommates = [f for f in self.fish_list if f.sleeping_in is self.sleeping_in]
+        if any(not r._awake_in_home for r in roommates):
+            return False
+        latest_wake = max(r._wake_time for r in roommates)
+        return time.monotonic() - latest_wake >= WAKE_LINGER_SECONDS
 
     def _claim_home(self):
         """Pick a container Decoration to sleep inside tonight, or None for
@@ -331,6 +388,11 @@ class Fish(Widget):
         # is something you can actually see, not just an Inspector number.
         if self.growth_stage == "Baby":
             return BABY_RIGHT if self.vx >= 0 else BABY_LEFT
+        # An Axolotl visibly looks different while resting (see the
+        # Axolotl-tuned relax mechanic above) -- a closed-eyes glyph instead
+        # of its normal one, the one purely visual "idle animation" touch.
+        if self.species_name == "Axolotl" and time.monotonic() < self._relaxing_until:
+            return AXOLOTL_RESTING_GLYPH
         return self.right_glyph if self.vx >= 0 else self.left_glyph
 
     def natural_width(self, scale) -> int:
@@ -370,11 +432,15 @@ class Fish(Widget):
         # it's just a bug wearing a nightcap.
         sleeping = (
             self.environment is not None
-            and self.environment.get("phase") == "Night"
+            and (self.environment.get("phase") == "Night" or self._holding_asleep)
             and self.hunger <= SLEEP_HUNGER_THRESHOLD
         )
 
         if sleeping:
+            self._awake_in_home = False  # guards against a stale True if
+            # `sleeping` somehow flips back True mid-linger (day-cycle
+            # timing makes this very unlikely, but the invariant "asleep
+            # implies not shown awake" should hold regardless of path).
             if self.sleeping_in is None:
                 self.sleeping_in = self._claim_home()
             if self.sleeping_in is not None:
@@ -445,11 +511,36 @@ class Fish(Widget):
                     self.vy *= IDLE_DAMPING
         else:
             if self.sleeping_in is not None:
-                # Waking up -- reappear right at the home's doorstep and
-                # resume normal movement/visibility from there.
-                self.fx, self.fy = self.sleeping_in.fx, self.sleeping_in.fy
-                self.sleeping_in = None
-                self._entered = False
+                if not self._awake_in_home:
+                    # Just woke up -- lingers here a moment rather than
+                    # instantly vanishing: still tucked in/invisible from
+                    # the open tank (the _entered check below is unchanged
+                    # and still applies), just no longer shown asleep
+                    # wherever occupants_of() is read.
+                    self._awake_in_home = True
+                    self._wake_time = now
+                elif self._roommates_ready_to_leave():
+                    # Everyone sharing this home is awake and lingering,
+                    # and it's been WAKE_LINGER_SECONDS since the *last* of
+                    # them woke -- the whole room leaves together this
+                    # frame instead of trickling out one at a time (each
+                    # roommate's own draw() computes this same condition
+                    # independently, so they all resolve it simultaneously).
+                    self.fx, self.fy = self.sleeping_in.fx, self.sleeping_in.fy
+                    self.sleeping_in = None
+                    self._entered = False
+                    self._awake_in_home = False
+            # Whatever the reason `sleeping` just went False -- a real wake
+            # attempt succeeding, the fallback timeout, or even the hunger
+            # override kicking in while still held -- always clear the
+            # holding state here too, so it can never stay stale-True and
+            # re-trap this fish back asleep once conditions change again.
+            self._holding_asleep = False
+            self._wake_attempts_used = 0
+            self._wake_threshold = None
+            self._held_since = None
+            self._wake_waker = None
+            self._wake_next_attempt = None
             if now >= self._next_turn:
                 lo, hi = MIN_TURN_DELAY, MAX_TURN_DELAY
                 turn_speed = speed
@@ -467,10 +558,15 @@ class Fish(Widget):
                 self._next_relax_check = now + random.uniform(
                     RELAX_CHECK_MIN, RELAX_CHECK_MAX
                 )
-                if random.random() < RELAX_CHANCE:
-                    self._relaxing_until = now + random.uniform(
-                        RELAX_DURATION_MIN, RELAX_DURATION_MAX
-                    )
+                is_axolotl = self.species_name == "Axolotl"
+                chance = AXOLOTL_RELAX_CHANCE if is_axolotl else RELAX_CHANCE
+                duration_range = (
+                    (AXOLOTL_RELAX_DURATION_MIN, AXOLOTL_RELAX_DURATION_MAX)
+                    if is_axolotl
+                    else (RELAX_DURATION_MIN, RELAX_DURATION_MAX)
+                )
+                if random.random() < chance:
+                    self._relaxing_until = now + random.uniform(*duration_range)
             relaxing = (
                 self.favorite_decoration is not None and now < self._relaxing_until
             )
@@ -719,6 +815,7 @@ def _make_fish(
         price=species.price,
         environment=environment,
         paused=paused,
+        favorite_foods=species.favorite_foods,
     )
 
 

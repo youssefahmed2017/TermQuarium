@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Mechanics — TermQuarium Docs</title>
-<meta name="description" content="The exact numbers behind TermQuarium's hunger, relationships, breeding, and economy systems." />
+<meta name="description" content="The exact numbers behind TermQuarium's hunger, feeding, relationships, breeding, and economy systems." />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%A0%3C/text%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -61,6 +61,22 @@
             <h2>Hunger</h2>
             <p>Hunger climbs on a deliberately slow clock, separate from the per-frame movement update. A fish that goes long enough without reaching food starts losing health from starvation instead — a fish can genuinely die this way.</p>
 
+            <h2>Feeding &amp; treats</h2>
+            <p>Fish Food is bulk and impersonal — buy a pack, drop it in the water, and whichever fish reaches it first eats it. Treats work differently: bought one pack at a time from the Shop, then fed directly to one chosen fish from its own Inspector.</p>
+            <div class="docs-table-wrap">
+              <table>
+                <thead><tr><th>Treat</th><th>Price</th><th>Pack size</th></tr></thead>
+                <tbody>
+                  <tr><td>🦐 Brine Shrimp</td><td>$10</td><td>5</td></tr>
+                  <tr><td>🪱 Worms</td><td>$8</td><td>5</td></tr>
+                  <tr><td>🩸 Bloodworms</td><td>$12</td><td>5</td></tr>
+                  <tr><td>🦠 Plankton</td><td>$9</td><td>5</td></tr>
+                  <tr><td>🍕 Pizza</td><td>$12</td><td>1</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>A treat relieves hunger by exactly the same amount as regular Fish Food — there's no bigger number for buying one, on purpose. What changes is the reaction: a species with a declared favorite (today, just the Axolotl — Brine Shrimp, Bloodworms, and Worms) lights up when fed one, shown as a nicer toast. Pizza sits outside that system entirely — nobody has it as a declared favorite, yet every fish is delighted by it regardless, which is exactly why it's kept to a single serving per purchase instead of a pack of five like the others.</p>
+
             <h2>Relationships</h2>
             <p>Every pair of fish shares one continuous bond score from &minus;100 to 100, nudged by real events — waking each other, sleeping side by side, giving up a bed — and slowly decaying if left alone. The score maps to a state:</p>
             <div class="docs-table-wrap">
@@ -78,7 +94,8 @@
             <p>Each pair remembers up to 5 specific reasons for their score, oldest dropped first once that fills up. A Playful fish gets an extra boost to the score when it successfully wakes a friend up.</p>
 
             <h2>Sleep &amp; wake-ups</h2>
-            <p>About 1 in 5 fish (20%) are born Sleepy, independent of their personality. When a Friend or Best Friend tries to wake a Sleepy sleeper, it resists outright roughly 4 times out of 5 — a normal wake-up practically never works on a Sleepy fish, though it isn't a hard 100% guarantee either way.</p>
+            <p>About 1 in 5 fish (20%) are born Sleepy, independent of their personality. Everyone else wakes together the instant Night ends — a Sleepy fish genuinely doesn't: it stays asleep past the normal transition until a real wake attempt succeeds, resisting each one roughly 7 times out of 10. It's never permanently stuck, though — only a same-container <b>Friend</b> or <b>Neutral</b> tankmate ever bothers trying (a Rival won't), and each one is given a randomized number of chances before success becomes guaranteed: 3&ndash;5 for a Friend, 4&ndash;6 for a Neutral acquaintance. With nobody eligible in the room at all, a fallback timer wakes it anyway after about a minute.</p>
+            <p>A woken fish doesn't vanish the instant it wakes, either — it lingers a few seconds, and the whole room leaves together once every occupant is awake, not one at a time. See <a href="decorations.html" style="color:var(--accent);text-decoration:none;font-weight:600">Decorations</a> for the "Enter" view this all plays out in.</p>
 
             <h2>Breeding</h2>
             <p>Once a day, every mutual, grown-up, non-predator Friend or Best Friend pair has a 25% chance to have a baby, up to a cap of 30 total fish in the tank so it can't run away forever.</p>

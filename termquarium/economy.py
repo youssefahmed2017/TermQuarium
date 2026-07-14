@@ -79,7 +79,9 @@ def compute_visitor_income(attractiveness: int):
     return visitors, ticket_sales, donations
 
 
-def roll_visitor_donation(visitors: int, day_seconds: float = AGE_SECONDS_PER_DAY) -> int:
+def roll_visitor_donation(
+    visitors: int, day_seconds: float = AGE_SECONDS_PER_DAY
+) -> int:
     """Called once per real-time second (see aquarium.py's _per_second_tick)
     to spread a day's worth of visitor donations out as individual events
     instead of one lump sum the player only sees at day's end. Each second

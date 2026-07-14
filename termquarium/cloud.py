@@ -104,6 +104,8 @@ def list_cloud_saves(cloud_key: str, base_url: str = CLOUD_API_BASE) -> list[dic
     return _request("GET", "/saves", cloud_key, base_url) or []
 
 
-def delete_cloud_save(cloud_key: str, name: str, base_url: str = CLOUD_API_BASE) -> None:
+def delete_cloud_save(
+    cloud_key: str, name: str, base_url: str = CLOUD_API_BASE
+) -> None:
     """Remove one cloud save. A no-op if it was never there."""
     _request("DELETE", _name_path(name), cloud_key, base_url)

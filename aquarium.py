@@ -207,6 +207,7 @@ from examples.aquarium.termquarium.fish import (
     occupants_of,
 )
 from examples.aquarium.termquarium.inspectors import (
+    _build_castle_interior,
     _build_daily_summary,
     _build_decoration_inspector,
     _build_inspector,
@@ -219,6 +220,7 @@ from examples.aquarium.termquarium.relationships import (
     clear_relationships,
     decay_relationships,
     find_breeding_pairs,
+    find_eligible_waker,
     find_mutual_friend_pairs,
     get_relationship,
     random_personality,
@@ -227,7 +229,9 @@ from examples.aquarium.termquarium.relationships import (
     record_wake_up,
     relationship_state,
     remember,
+    resolve_wake_attempt,
     roll_is_sleepy,
+    roll_wake_threshold,
     set_relationship,
 )
 from examples.aquarium.termquarium.cloud import (
@@ -319,6 +323,7 @@ def main() -> None:
         "donations_today": 0,
         "welfare_enabled": True,
         "bubbles_enabled": True,
+        "treats": {},
     }
     hungry_warning_active = {"value": False}
     day_count = {"n": 0}
@@ -376,14 +381,11 @@ def main() -> None:
             capacity=item.capacity,
         )
 
-    decorations = [
-        _make_starting_decoration("Plant", tank_x + 3),
-        _make_starting_decoration("Driftwood", tank_x + tank_w // 3),
-        _make_starting_decoration("Rock", tank_x + tank_w // 2),
-        _make_starting_decoration("Castle", tank_x + max(tank_w - 10, tank_w * 4 // 5)),
-    ]
-    for d in decorations:
-        app.add(d)
+    # Seeded by _seed_starter_aquarium() (defined below, once _add_fish
+    # exists) -- called once at the bottom of main() for the initial boot,
+    # and again from _return_to_main_menu()'s "New Aquarium" for a real
+    # mid-session reset.
+    decorations = []
 
     PHASE_ICON = {"Day": "☀️", "Morning": "🌅", "Night": "🌙"}
 
@@ -451,7 +453,7 @@ def main() -> None:
 
     def _open_inspector(f: Fish) -> None:
         app.open_overlay(
-            _build_inspector(app, f, _rename_fish, _sell_fish),
+            _build_inspector(app, f, _rename_fish, _sell_fish, state["treats"], _feed_treat),
             close_on_click_outside=True,
         )
 
@@ -471,9 +473,61 @@ def main() -> None:
 
     def _open_decoration_inspector(d: Decoration) -> None:
         app.open_overlay(
-            _build_decoration_inspector(app, d, fish, _sell_decoration),
+            _build_decoration_inspector(
+                app, d, fish, _sell_decoration, _enter_decoration
+            ),
             close_on_click_outside=True,
         )
+
+    def _enter_decoration(d: Decoration) -> None:
+        # A lightweight poll rather than hooking every individual event
+        # that can change who's home (the nightly wake transition, or the
+        # rarer case of a housed fish starving) -- see _build_castle_interior's
+        # docstring. on_close fires no matter how the overlay is dismissed
+        # (Leave, click-outside, Esc), which is also true of _refresh()'s
+        # own close-then-reopen when occupants change -- `rebuilding` tells
+        # on_close apart from an actual "the player left" close, so the
+        # poll only ever stops on the latter.
+        interior = {"box": None, "occupants": None, "rebuilding": False}
+
+        def _on_close(_widget):
+            if interior["rebuilding"]:
+                interior["rebuilding"] = False
+                return
+            app.cancel(timer)
+
+        def _signature():
+            # Identity, mood, *and* boop-flash state -- a fish waking but
+            # lingering (still occupants_of()-eligible, see fish.py's
+            # _awake_in_home) or mid-attempt (_just_booped_until) needs to
+            # trigger a redraw too, not just someone actually arriving or
+            # leaving.
+            now = time.monotonic()
+            return [
+                (
+                    o,
+                    o._awake_in_home,
+                    o._just_booped_until is not None and now < o._just_booped_until,
+                )
+                for o in occupants_of(d, fish)
+            ]
+
+        def _show():
+            interior["occupants"] = _signature()
+            interior["box"] = app.open_overlay(
+                _build_castle_interior(app, d, fish),
+                close_on_click_outside=True,
+                on_close=_on_close,
+            )
+
+        def _refresh():
+            if _signature() != interior["occupants"]:
+                interior["rebuilding"] = True
+                app.close_overlay(interior["box"])
+                _show()
+
+        timer = app.every(1.0, _refresh)
+        _show()
 
     def _on_eat_food(food):
         app.widgets.remove(food)
@@ -502,9 +556,25 @@ def main() -> None:
         _wire_tooltip(f)
         return f
 
-    for _ in range(3):
-        _add_fish(random.choice(STARTER_SPECIES))
-    _refresh_stats()
+    def _seed_starter_aquarium() -> None:
+        """Everything a brand-new aquarium starts with -- the same starter
+        decorations/fish boot has always created, factored out so
+        _return_to_main_menu()'s "New Aquarium" can genuinely start over
+        mid-session instead of only being meaningful at launch."""
+        for kind, x in (
+            ("Plant", tank_x + 3),
+            ("Driftwood", tank_x + tank_w // 3),
+            ("Rock", tank_x + tank_w // 2),
+            ("Castle", tank_x + max(tank_w - 10, tank_w * 4 // 5)),
+        ):
+            d = _make_starting_decoration(kind, x)
+            decorations.append(d)
+            app.add(d)
+        for _ in range(3):
+            _add_fish(random.choice(STARTER_SPECIES))
+        _refresh_stats()
+
+    _seed_starter_aquarium()
 
     def _spawn_fish(species: Species):
         # Only for purchases (see the Shop below) -- unlike the starter fish
@@ -543,6 +613,36 @@ def main() -> None:
         state["food_spent_today"] += FOOD_PACK_PRICE
         _refresh_stats()
         app.toast(f"Bought {FOOD_PACK_SIZE} fish food!", level="success")
+
+    def _buy_treat(item) -> None:
+        state["treats"][item.kind] = state["treats"].get(item.kind, 0) + item.pack_size
+        unit = "" if item.pack_size == 1 else f" x{item.pack_size}"
+        app.toast(f"Bought {item.kind}{unit}.", level="success")
+
+    def _feed_treat(f: Fish, kind: str) -> None:
+        state["treats"][kind] -= 1
+        f.hunger, f.health = feed(f.hunger, f.health)
+        if kind == "Pizza":
+            # Universal delight, regardless of species or favorite --
+            # matching Pizza's flavor text (see constants.TREAT_SHOP_ITEMS):
+            # nobody has it as a declared favorite, everyone loves it anyway.
+            app.toast(
+                f"{f.display_name} devoured an entire {kind}. Nobody knows why.",
+                level="success",
+                icon="🍕",
+            )
+        elif kind in f.favorite_foods:
+            # Flavor only -- same feed() relief as any other treat above,
+            # just a nicer reaction. Personality, not a better stat stick.
+            item = next(i for i in TREAT_SHOP_ITEMS if i.kind == kind)
+            app.toast(
+                f"{f.display_name} lights up at the {kind}! Favorite food.",
+                level="success",
+                icon=item.emoji,
+            )
+        else:
+            app.toast(f"Fed {f.display_name} some {kind}.", level="success")
+        _refresh_stats()
 
     def _add_decoration(item: DecorationItem) -> None:
         width = max(text_width(line) for line in item.art)
@@ -609,8 +709,11 @@ def main() -> None:
             ],
         }
 
-    def _load_snapshot(snapshot: dict) -> None:
-        """Replace the tank from a validated save while retaining the UI."""
+    def _clear_tank() -> None:
+        """Removes every fish/food/decoration widget and resets `state`/
+        `day_count`/`current_save` back to defaults -- the common first
+        half of both loading a save (_load_snapshot) and starting fresh
+        mid-session (_return_to_main_menu()'s "New Aquarium")."""
         for widget in [*foods, *fish, *decorations]:
             if widget in app.widgets:
                 app.widgets.remove(widget)
@@ -620,13 +723,21 @@ def main() -> None:
         state.clear()
         state.update(
             {
-                "money": 120,
+                "money": 100,
                 "food": 15,
                 "food_spent_today": 0,
                 "donations_today": 0,
                 "welfare_enabled": True,
+                "bubbles_enabled": True,
+                "treats": {},
             }
         )
+        day_count["n"] = 0
+        current_save["name"] = None
+
+    def _load_snapshot(snapshot: dict) -> None:
+        """Replace the tank from a validated save while retaining the UI."""
+        _clear_tank()
         state.update(snapshot.get("state", {}))
         day_count["n"] = int(snapshot.get("day", 0))
         for saved in snapshot.get("decorations", []):
@@ -793,7 +904,7 @@ def main() -> None:
 
     def _open_shop():
         app.open_overlay(
-            _build_shop(app, state, _spawn_fish, _buy_food, _add_decoration),
+            _build_shop(app, state, _spawn_fish, _buy_food, _add_decoration, _buy_treat),
             close_on_click_outside=True,
         )
 
@@ -888,10 +999,15 @@ def main() -> None:
     def _open_help():
         app.open_overlay(build_help_menu(app), close_on_click_outside=True)
 
-    def _open_start_menu():
+    def _open_start_menu(on_resume=None):
+        # `on_resume` is only ever passed by _return_to_main_menu() (a real
+        # mid-session reset is now possible -- see _new_aquarium below);
+        # boot's own call leaves it None, exactly as before this existed.
         menu = None
 
         def _new_aquarium():
+            _clear_tank()
+            _seed_starter_aquarium()
             app.close_overlay(menu)
 
         def _load_save():
@@ -903,8 +1019,21 @@ def main() -> None:
         def _help():
             _open_help()
 
-        menu = build_start_menu(app, _new_aquarium, _load_save, _settings, _help)
-        app.open_overlay(menu, close_on_escape=False)
+        # Boot's call (on_resume=None) keeps today's exact behavior: no
+        # Resume button, Esc/click-outside do nothing. Reached mid-session
+        # via Ctrl+C, both dismiss it too -- on_close (fires no matter
+        # which of Resume/Esc/click-outside/New/Load is what closes it)
+        # is what actually unpauses, so all of them resume correctly.
+        resumable = on_resume is not None
+        menu = build_start_menu(
+            app, _new_aquarium, _load_save, _settings, _help, on_resume
+        )
+        app.open_overlay(
+            menu,
+            close_on_escape=resumable,
+            close_on_click_outside=resumable,
+            on_close=(lambda _w: paused.update(value=False)) if resumable else None,
+        )
 
     def _confirm_quit():
         app.confirm(
@@ -1105,6 +1234,59 @@ def main() -> None:
             counted_gave_up.add(key)
             record_gave_up_home(f, beneficiary)
 
+    def _start_sleepy_holds():
+        # Must run in this exact spot -- right at the Night->Morning
+        # transition, before any fish's own draw() has processed the new
+        # phase -- because a non-Sleepy tankmate's `sleeping_in` reverts to
+        # None the instant its own next frame sees the phase change. One
+        # tick later (_process_sleepy_holds, on the ordinary 1-second
+        # timer) would already be too late to find who was actually
+        # sleeping alongside a Sleepy fish overnight.
+        for f in fish:
+            if not f.is_sleepy or f.sleeping_in is None:
+                continue
+            f._holding_asleep = True
+            f._held_since = time.monotonic()
+            tankmates = [
+                o for o in fish if o is not f and o.sleeping_in is f.sleeping_in
+            ]
+            waker, tier = find_eligible_waker(f, tankmates)
+            if waker is not None:
+                f._wake_waker = waker
+                f._wake_threshold = roll_wake_threshold(tier)
+                f._wake_next_attempt = time.monotonic() + WAKE_ATTEMPT_INTERVAL_SECONDS
+
+    def _process_sleepy_holds():
+        # The ongoing half, on the ordinary per-second tick: resolve an
+        # attempt once its cooldown has passed, or force a wake once
+        # SLEEPY_HOLD_MAX_SECONDS has passed regardless -- the fallback
+        # that keeps "never permanently impossible" true even when
+        # _start_sleepy_holds() found nobody eligible to try at all.
+        now = time.monotonic()
+        for f in fish:
+            if not f._holding_asleep:
+                continue
+            if now - f._held_since >= SLEEPY_HOLD_MAX_SECONDS:
+                f._holding_asleep = False
+                continue
+            waker = f._wake_waker
+            if waker is None or waker not in fish or now < f._wake_next_attempt:
+                continue
+            # Every attempt actually happens visibly -- see BOOP_FLASH_SECONDS
+            # -- resisted or not, not just the one that finally succeeds.
+            waker._just_booped_until = now + BOOP_FLASH_SECONDS
+            if resolve_wake_attempt(f._wake_attempts_used, f._wake_threshold):
+                record_wake_up(waker, f)
+                app.toast(
+                    f"{waker.display_name} notices {f.display_name} is still "
+                    f"asleep... *boop*... {f.display_name} woke up!",
+                    level="info",
+                )
+                f._holding_asleep = False
+            else:
+                f._wake_attempts_used += 1
+                f._wake_next_attempt = now + WAKE_ATTEMPT_INTERVAL_SECONDS
+
     def _update_environment():
         previous_phase = environment["phase"]
         fraction = compute_time_of_day(
@@ -1116,6 +1298,7 @@ def main() -> None:
         if previous_phase == "Night" and environment["phase"] == "Morning":
             _check_night_events()
             _fire_morning_vignette()
+            _start_sleepy_holds()
 
     def _hunger_step() -> float:
         # Night: sleeping fish get hungry slower. Heat: a stressed fish
@@ -1164,6 +1347,7 @@ def main() -> None:
             # permanently latched from the first warning of the session.
             hungry_warning_active["value"] = False
         _check_emergency_welfare()
+        _process_sleepy_holds()
 
         # Visitor donations pay out the moment they happen instead of being
         # bundled into the once-a-day summary -- see roll_visitor_donation()
@@ -1258,7 +1442,24 @@ def main() -> None:
     app.every(1.0, _per_second_tick)
     app.every(AGE_SECONDS_PER_DAY, _daily_tick)
 
+    def _return_to_main_menu():
+        # Ctrl+C reaches here even through a modal (see cozy_tui's
+        # App._handle_ctrl_c()) -- close whatever's currently stacked
+        # first (there's no public "close everything", so this loops the
+        # ordinary "close the topmost" call), same as the Pause Menu,
+        # pause the simulation so nothing keeps aging/starving behind the
+        # menu, and unpause via open_overlay's own on_close hook so
+        # Resume, Esc, and click-outside all correctly resume regardless
+        # of which one is used.
+        while app._overlays:
+            app.close_overlay()
+        paused["value"] = True
+        # The menu is the only overlay open at this point, so closing
+        # "the topmost" (no widget arg needed) always means this one.
+        _open_start_menu(on_resume=lambda: app.close_overlay())
+
     app.on_key(Key.ESC, lambda: _open_pause_menu())
+    app.on_key(Key.CTRL_C, _return_to_main_menu)
     _open_start_menu()
     app.run()
 

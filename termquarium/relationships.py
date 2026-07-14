@@ -30,6 +30,8 @@ from .constants import (
     SLEEPY_CHANCE,
     SLEEPY_RESIST_CHANCE,
     SLEPT_TOGETHER_SCORE,
+    WAKE_CHANCES_FRIEND,
+    WAKE_CHANCES_NEUTRAL,
     WAKE_UP_SCORE,
     WAKE_UP_SCORE_PLAYFUL,
     GAVE_UP_HOME_SCORE,
@@ -44,9 +46,49 @@ def random_personality() -> str:
 def roll_is_sleepy() -> bool:
     """Whether a new fish is also Sleepy -- independent of (and stackable
     with) its regular personality, e.g. a Greedy fish can also be Sleepy.
-    Affects only how hard it is to wake via a morning boop (see
-    choose_morning_vignette()); nothing else about it changes."""
+    Affects only how hard it is to wake (see find_eligible_waker()/
+    resolve_wake_attempt()); nothing else about it changes."""
     return random.random() < SLEEPY_CHANCE
+
+
+def find_eligible_waker(sleeper, candidates):
+    """Among `candidates` (a Sleepy sleeper's same-container tankmates),
+    the one best placed to attempt waking it -- Friend/Best Friend or
+    Neutral tier only, picking the strongest bond if more than one
+    qualifies. A Rival or a fish that Dislikes the sleeper never attempts
+    at all; it wouldn't bother. Returns (waker, tier) where tier is
+    "Friend" or "Neutral", or (None, None) if nobody here is willing."""
+    best, best_score = None, None
+    for other in candidates:
+        if other is sleeper:
+            continue
+        score = get_relationship(sleeper, other).score
+        if score <= RELATIONSHIP_DISLIKE_THRESHOLD:
+            continue
+        if best is None or score > best_score:
+            best, best_score = other, score
+    if best is None:
+        return None, None
+    tier = "Friend" if best_score >= RELATIONSHIP_FRIEND_THRESHOLD else "Neutral"
+    return best, tier
+
+
+def roll_wake_threshold(tier: str) -> int:
+    """How many failed attempts a Sleepy fish can resist from this tier of
+    tankmate before the next attempt always succeeds -- rolled once per
+    holding period, not per attempt."""
+    lo, hi = WAKE_CHANCES_FRIEND if tier == "Friend" else WAKE_CHANCES_NEUTRAL
+    return random.randint(lo, hi)
+
+
+def resolve_wake_attempt(attempts_used: int, threshold: int) -> bool:
+    """One wake attempt against a Sleepy fish: True if it succeeds. Once
+    `attempts_used` has reached `threshold`, success is unconditional --
+    the whole point of a threshold is that waking one up is never
+    permanently impossible, just harder for some tiers than others."""
+    if attempts_used >= threshold:
+        return True
+    return random.random() >= SLEEPY_RESIST_CHANCE
 
 
 class Relationship:
