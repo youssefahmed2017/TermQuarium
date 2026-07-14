@@ -8,6 +8,7 @@ from typing import Callable
 from cozy_tui import Style
 from cozy_tui.widgets import Box, Button, Label
 
+from .dreams import DreamAnimation
 from .save import format_relative_time
 
 MAX_CARDS_SHOWN = 4  # keeps the menu on one screen; no scrolling yet
@@ -121,6 +122,77 @@ def build_restore_menu(
     return box
 
 
+def build_achievements_menu(app, achievements: list, unlocked: set[str]) -> Box:
+    """A read-only list of every achievement, locked and unlocked alike --
+    transparent rather than secret, so the list doubles as a light to-do
+    menu of things worth trying. `unlocked` is the shared
+    save.load_unlocked_achievements() set; achievements are account-wide,
+    not tied to any one save (see save.py), so this looks the same no
+    matter which aquarium is currently open."""
+    muted = Style(fg="bright_black")
+    box = Box(0, 0, "560x460", title="Achievements", border="rounded", style=app.style)
+    box.add(
+        Label(
+            2,
+            1,
+            f"{len(unlocked)} / {len(achievements)} unlocked",
+            Style(fg="bright_cyan", styles=["bold"]),
+        )
+    )
+    y = 3
+    for achievement in achievements:
+        got = achievement.id in unlocked
+        name_style = Style(fg="bright_yellow", styles=["bold"]) if got else muted
+        suffix = " ✓" if got else ""
+        box.add(
+            Label(2, y, f"{achievement.icon} {achievement.name}{suffix}", name_style)
+        )
+        y += 1
+        box.add(Label(4, y, achievement.description, muted))
+        y += 2
+    box.add(Button(2, y, "Close").on_click(lambda _w: app.close_overlay(box)))
+    return box
+
+
+def build_dream_view(app, f, on_view_stats: Callable[[object], None]) -> Box:
+    """The click-through destination for a dreaming fish's 💭 indicator (see
+    aquarium.py's _open_dream(), which takes over "click the fish" while a
+    dream is active, in place of the normal Fish Inspector) -- purely a
+    "watch and smile" view, per the user's own framing: nothing inside the
+    animation itself is clickable, it just loops (see dreams.DreamAnimation)
+    for as long as this stays open. Below it, a plain-language caption
+    (name/title/description) is a clue for a player who can't quite read the
+    scene, not a replacement for it -- the animation is still the point.
+    "View Stats" is the escape hatch back to the normal Inspector, since a
+    dreaming fish would otherwise be unreachable there until it wakes."""
+    dream = f.dream
+    muted = Style(fg="bright_black")
+    box = Box(
+        0,
+        0,
+        "400x260",
+        title=f"💭 {f.display_name}'s Dream",
+        border="rounded",
+        style=app.style,
+    )
+    anim = DreamAnimation(2, 2, dream, Style(fg="bright_cyan"))
+    box.add(anim)
+    y = 2 + anim.natural_height(1) + 1
+    box.add(Label(2, y, f"{f.display_name} is dreaming about:", muted))
+    y += 1
+    box.add(Label(2, y, f"{dream.title},", muted))
+    y += 1
+    box.add(Label(2, y, dream.description, muted))
+    y += 2
+    box.add(
+        Button(2, y, "View Stats").on_click(
+            lambda _w: (app.close_overlay(box), on_view_stats(f))
+        )
+    )
+    box.add(Button(16, y, "Close").on_click(lambda _w: app.close_overlay(box)))
+    return box
+
+
 def build_help_menu(app) -> Box:
     """A compact in-game controls reference, reachable from the start menu."""
     muted = Style(fg="bright_black")
@@ -146,6 +218,7 @@ def build_start_menu(
     on_settings: Callable[[], None],
     on_help: Callable[[], None],
     on_resume: Callable[[], None] | None = None,
+    on_achievements: Callable[[], None] | None = None,
 ) -> Box:
     """The first screen shown for every session -- and, since Ctrl+C now
     reaches this same menu mid-session too (see aquarium.py's
@@ -170,7 +243,9 @@ def build_start_menu(
     box.add(Button(2, y + 2, "Load Save").on_click(lambda _w: on_load()))
     box.add(Button(2, y + 4, "Settings").on_click(lambda _w: on_settings()))
     box.add(Button(2, y + 6, "Help").on_click(lambda _w: on_help()))
-    box.add(Button(2, y + 9, "Quit").on_click(lambda _w: app.quit()))
+    if on_achievements is not None:
+        box.add(Button(2, y + 8, "Achievements").on_click(lambda _w: on_achievements()))
+    box.add(Button(2, y + 11, "Quit").on_click(lambda _w: app.quit()))
     return box
 
 
@@ -181,6 +256,7 @@ def build_pause_menu(
     on_settings: Callable[[], None],
     on_help: Callable[[], None],
     on_quit: Callable[[], None],
+    on_achievements: Callable[[], None] | None = None,
 ) -> Box:
     """Esc opens this (see main()) instead of instantly quitting -- the
     game genuinely freezes while it's open (every Fish/BubbleField checks
@@ -200,5 +276,7 @@ def build_pause_menu(
     box.add(Button(2, 7, "Save").on_click(lambda _w: on_save()))
     box.add(Button(2, 9, "Settings").on_click(lambda _w: on_settings()))
     box.add(Button(2, 11, "Help").on_click(lambda _w: on_help()))
-    box.add(Button(2, 14, "Quit").on_click(lambda _w: on_quit()))
+    if on_achievements is not None:
+        box.add(Button(2, 13, "Achievements").on_click(lambda _w: on_achievements()))
+    box.add(Button(2, 16, "Quit").on_click(lambda _w: on_quit()))
     return box

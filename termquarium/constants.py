@@ -253,16 +253,34 @@ RELATIONSHIP_MEMORY_LIMIT = 5  # reasons remembered per pair, oldest dropped fir
 #   record_gave_up_home     -- a fish wanted a container but there wasn't
 #                              room while a nearby/bonded fish got one,
 #                              also checked once at that same transition.
-# Several other interactions from the original design (sharing/stealing
-# food, protecting from a shark, playing, fighting, blocking a doorway,
-# luring a shark at someone) are deliberately NOT wired up yet -- none of
-# those are real mechanics in this game today, and faking the score delta
-# without the underlying behavior would be worse than not having it. They're
-# natural follow-ups once/if each mechanic exists.
+#   record_saved_from_shark -- a Shark gets within SHARK_SCARE_RADIUS of a
+#                              fish that has a Friend nearby (see
+#                              aquarium.py's _check_shark_scares()).
+#   record_pushed_from_home -- two already-Disliked-or-worse fish end up
+#                              sharing a container overnight anyway (same
+#                              Night -> Morning check as record_slept_together,
+#                              just the unfriendly counterpart of it).
+# A few other interactions from the original design (sharing/stealing food,
+# playing, fighting, blocking a doorway, luring a shark at someone) are
+# still deliberately NOT wired up -- none of those are real mechanics in
+# this game today, and faking the score delta without the underlying
+# behavior would be worse than not having it. They're natural follow-ups
+# once/if each mechanic exists.
 WAKE_UP_SCORE = 4.0
 WAKE_UP_SCORE_PLAYFUL = 6.0  # Playful fish get an extra kick out of waking a friend
 SLEPT_TOGETHER_SCORE = 1.0
 GAVE_UP_HOME_SCORE = 7.0
+SAVED_FROM_SHARK_SCORE = 10.0  # a bigger bump -- fear is a strong bonding moment
+PUSHED_FROM_HOME_SCORE = -6.0  # negative -- forced proximity sours an already-bad bond
+
+# Shark scares (see aquarium.py's _check_shark_scares(), called every
+# per-second tick): any non-predator fish within SHARK_SCARE_RADIUS of a
+# Shark counts as scared, once per approach (Fish._shark_scare_active guards
+# against re-firing every tick while it lingers nearby). If an existing
+# Friend is within SHARK_RESCUE_RADIUS at that moment, credit them with the
+# save (record_saved_from_shark) instead of a lonely near-miss.
+SHARK_SCARE_RADIUS = 5.0
+SHARK_RESCUE_RADIUS = 6.0
 
 # Personality reactions to interactions (Step 6): Lazy barely reacts either
 # way -- matching its low-effort theme everywhere else in this file --
@@ -381,6 +399,114 @@ BOOP_FLASH_SECONDS = 2.0
 # a lot of independently-moving widgets at once -- the whole point of this
 # example (see the module docstring).
 STRESS_TEST_TARGET = 50
+
+# Achievements: account-wide milestones (see save.py's
+# load_unlocked_achievements()/store_unlocked_achievements(), stored
+# alongside the Cloud Key rather than inside any one aquarium's save file --
+# starting a New Aquarium or loading an old save never resets these). Every
+# entry hooks an event the game already tracks; see aquarium.py's
+# _unlock_achievement() and its call sites. Transparent, not secret -- the
+# Achievements menu always shows every name/description, locked or not.
+Achievement = namedtuple("Achievement", "id icon name description")
+ACHIEVEMENTS = [
+    Achievement(
+        "first_friend", "🙂", "Made a Friend", "Two fish reached Friend level."
+    ),
+    Achievement(
+        "best_friends", "❤️", "Best Friends", "Two fish reached Best Friend level."
+    ),
+    Achievement("first_baby", "👶", "It's a Baby!", "Two fish had a baby."),
+    Achievement(
+        "first_axolotl", "🦎", "Wait, Axolotls?!", "An Axolotl joined your tank."
+    ),
+    Achievement(
+        "full_house",
+        "🐠",
+        "Full House",
+        f"Reached {STRESS_TEST_TARGET} fish in one tank.",
+    ),
+    Achievement(
+        "their_favorite", "💕", "Their Favorite", "Fed a fish its favorite treat."
+    ),
+    Achievement("mystery_craving", "🍕", "Mystery Craving", "Fed a fish some Pizza."),
+    Achievement("first_sale", "💰", "First Sale", "Sold a fish."),
+    Achievement(
+        "tucked_in", "🏠", "Tucked In", "A fish slept in a container overnight."
+    ),
+    Achievement("one_week_in", "📅", "One Week In", "Your aquarium reached Day 7."),
+    Achievement("backed_up", "☁️", "Backed Up", "Set up Cloud Saves."),
+]
+
+# Random events: one roll per day (see aquarium.py's
+# _maybe_trigger_random_event(), called from _daily_tick()), deliberately
+# rarer than MORNING_VIGNETTE_CHANCE/BREED_CHANCE above so it reads as a
+# genuine surprise rather than routine. Each event reuses existing state
+# (Fish.hunger, state["money"], _add_fish()) rather than a new temporary
+# buff/debuff system.
+RANDOM_EVENT_CHANCE = 0.12
+STORM_HUNGER_BUMP = 15.0  # flat, one-time -- not a decaying effect
+# A storm is a real, live weather state (environment["storm"], shared with
+# every Fish -- see fish.py's draw()), not just a retroactive toast: while
+# it's active, every awake fish heads for the nearest container and huddles
+# there (see main()'s _end_storm() for how/when it's cleared).
+STORM_DURATION_SECONDS = 25.0
+LUCKY_FIND_RANGE = (5, 20)  # $ -- a small bonus, not a strategy
+
+# Dreams: rolled once per fish at the Day/Morning -> Night transition (see
+# aquarium.py's _assign_dreams()), not every night for every sleeper --
+# "ooh, Steve is dreaming tonight" should feel like a notice-worthy
+# exception, not the default. DREAM_NIGHTMARE_CHANCE is an independent roll
+# on top of category selection (see dreams.choose_dream()), not a fifth
+# equally-likely bucket.
+DREAM_CHANCE = 0.25  # fraction of tonight's actually-sleeping fish that dream
+DREAM_NIGHTMARE_CHANCE = 0.04  # rare, per the user's own "2-5%" ask
+DREAM_FRAME_SECONDS = 2.2  # slow, bedtime-story pace between animation frames
+# How often a fish's dream lands in its *own* personality-leaned category
+# (see dreams.py's _PERSONALITY_CATEGORY) rather than a random other one --
+# a lean, not a lock, so e.g. a Greedy fish dreams about food often, not
+# every single time.
+DREAM_PERSONALITY_CHANCE = 0.6
+
+# Phase 2: memory-linked dreams -- choose_dream() looks at a fish's own
+# MEMORY_DREAM_LOOKBACK most recent memory_log entries (see below) before
+# falling back to plain personality weighting. A recent shark scare is a
+# much better-than-usual (not guaranteed) chance of dreaming about it again
+# tonight; a recent memory naming the fish's current friend nudges toward a
+# "friendship" dream about that same friend, regardless of personality.
+DREAM_SHARK_NIGHTMARE_CHANCE = 0.35
+MEMORY_DREAM_LOOKBACK = 3
+# A departed tankmate can resurface in a dream for as long as that
+# "isn't around anymore" line survives MEMORY_LOG_LIMIT's cap -- grief
+# fading as newer memories crowd it out, for free, with no separate decay.
+DREAM_REUNION_CHANCE = 0.15
+
+# Nightmare reaction (see aquarium.py's _process_nightmares()): a "bad"
+# category dream forces a real, early, solo wake -- unlike every other
+# dream, which just sits there quietly until the normal Night -> Morning
+# transition. NIGHTMARE_WAKE_DELAY_SECONDS after the dream is assigned, the
+# fish wakes up scared (Fish._just_scared_until, the same "flash a mood for
+# N seconds" trick BOOP_FLASH_SECONDS already uses); if it has a Friend, it
+# then quietly relocates to sleep beside them (joining their claimed
+# container if there's room, else just settling close on the floor -- both
+# paths reuse Fish.draw()'s existing housing/floor-settle steering
+# entirely unchanged, no new movement code) and gets a brief comfort mood
+# (Fish._nightmare_comfort_until) once it arrives. No friend: it simply
+# settles back to sleep on its own, no relocation.
+NIGHTMARE_WAKE_DELAY_SECONDS = 5.0
+NIGHTMARE_SCARE_FLASH_SECONDS = 2.5
+NIGHTMARE_COMFORT_FLASH_SECONDS = 3.0
+
+# Fish Memory Log: a per-fish diary of real, already-tracked events (see
+# aquarium.py's _log_memory()), distinct from Relationship.memories above --
+# this is one fish's own history, not a shared pair record. Same
+# newest-appended/oldest-dropped shape, just a different cap.
+MEMORY_LOG_LIMIT = 10
+
+# Cheat Console (backtick key, see termquarium/console.py): a dev/testing
+# tool, not player-facing content -- generous compared to MEMORY_LOG_LIMIT
+# since a debugging session can reasonably run many more commands than a
+# fish has notable life events.
+CONSOLE_LOG_LIMIT = 200
 
 # Ambient bubbles: purely decorative, toggled in Settings. Glyphs are plain
 # ASCII/Latin-1 (not emoji) on purpose -- same reasoning as the ASCII-art

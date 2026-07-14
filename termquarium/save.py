@@ -227,3 +227,28 @@ def store_cloud_key(key: str | None, home: Path | None = None) -> None:
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def _achievements_path(home: Path | None = None) -> Path:
+    ensure_data_dirs(home)
+    return data_dir(home) / "achievements.json"
+
+
+def load_unlocked_achievements(home: Path | None = None) -> set[str]:
+    """Account-wide, like the Cloud Key -- lives in the game's data
+    directory rather than any one save file, so a New Aquarium or a Load
+    never resets what's already been earned."""
+    try:
+        data = json.loads(_achievements_path(home).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    return set(data) if isinstance(data, list) else set()
+
+
+def store_unlocked_achievements(ids: set[str], home: Path | None = None) -> None:
+    """Written atomically like write_save()/store_cloud_key(). Sorted so the
+    file diffs cleanly if a player ever pokes at it directly."""
+    path = _achievements_path(home)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(sorted(ids), indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)

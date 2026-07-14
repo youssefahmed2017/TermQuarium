@@ -45,7 +45,7 @@ def _build_inspector(app, f: Fish, on_rename, on_sell, treats, on_feed_treat) ->
     spot = (
         f.favorite_decoration.kind if f.favorite_decoration is not None else "none yet"
     )
-    box = Box(0, 0, "380x440", title=f.display_name, border="rounded", style=app.style)
+    box = Box(0, 0, "380x520", title=f.display_name, border="rounded", style=app.style)
     box.add(Label(2, 1, f"Species: {f.species_name}"))
     box.add(Label(2, 2, f"Age: {f.age_days:.1f} days ({f.growth_stage})"))
     box.add(Label(2, 3, f"Health: {f.health:.0f}%"))
@@ -80,6 +80,18 @@ def _build_inspector(app, f: Fish, on_rename, on_sell, treats, on_feed_treat) ->
     if f.rival is not None:
         _add_bond(f.rival, Style(fg="bright_red"))
 
+    if f.memory_log:
+        # This fish's own diary (aquarium.py's _log_memory()) -- distinct
+        # from the friend/rival "why" lines above, which are a shared pair
+        # record. Newest last, like the log itself; only the last 5 shown
+        # so this section stays glanceable rather than a scrolling wall.
+        box.add(Label(2, y, "Memory Log", Style(styles=["bold"])))
+        y += 1
+        for entry in f.memory_log[-5:]:
+            box.add(Label(2, y, entry, MUTED))
+            y += 1
+        y += 1
+
     box.add(Label(2, y, f"Sell value: ${f.sell_value}"))
     y += 2
 
@@ -89,7 +101,9 @@ def _build_inspector(app, f: Fish, on_rename, on_sell, treats, on_feed_treat) ->
         y += 1
         for item in in_stock:
             box.add(
-                Button(2, y, f"{item.emoji} {item.kind} ({treats[item.kind]})").on_click(
+                Button(
+                    2, y, f"{item.emoji} {item.kind} ({treats[item.kind]})"
+                ).on_click(
                     lambda _w, kind=item.kind: (
                         on_feed_treat(f, kind),
                         app.close_overlay(box),
@@ -155,7 +169,7 @@ def _build_decoration_inspector(app, d: Decoration, fish, on_sell, on_enter) -> 
     return box
 
 
-def _build_castle_interior(app, d: Decoration, fish) -> Box:
+def _build_castle_interior(app, d: Decoration, fish, on_open_dream=None) -> Box:
     """The "Enter {kind}" destination: a quiet, read-only look at whoever's
     sleeping inside right now, laid out as beds of two -- pillows (⬜) and
     all, per the user's own ASCII language for this. Deliberately reached
@@ -178,7 +192,17 @@ def _build_castle_interior(app, d: Decoration, fish) -> Box:
     BOOP_FLASH_SECONDS (set in aquarium.py's _process_sleepy_holds(), for
     every attempt -- resisted or not). aquarium.py's _enter_decoration()
     re-opens this same box on a timer while it's up so none of this goes
-    stale while the player's watching."""
+    stale while the player's watching.
+
+    Since most sleeping fish end up housed once a player owns any container,
+    a dreaming occupant's row gets a 💭 next to its 😴 (same as the
+    open-tank indicator, fish.py's draw()) and becomes clickable into the
+    Dream view (on_open_dream) instead of a plain Label -- every other
+    occupant is unchanged. A nightmare forces its own early, one-fish wake
+    (see aquarium.py's _process_nightmares()): mood briefly shows 😨, then
+    -- once it's relocated to sleep beside a Friend, possibly in a
+    different bed shown here (or its own, if no Friend exists) -- 🥺 for a
+    moment before settling back to a plain mood."""
     occupants = occupants_of(d, fish)
     now = time.monotonic()
     beds = -(-d.capacity // 2)  # ceil division; today's containers are even
@@ -198,9 +222,31 @@ def _build_castle_interior(app, d: Decoration, fish) -> Box:
                     and now < guest._just_booped_until
                 ):
                     mood = "*boop*"
+                elif (
+                    guest._just_scared_until is not None
+                    and now < guest._just_scared_until
+                ):
+                    mood = "😨"
+                elif (
+                    guest._nightmare_comfort_until is not None
+                    and now < guest._nightmare_comfort_until
+                ):
+                    mood = "🥺"
+                elif guest._awake_in_home:
+                    mood = "🙂"
+                elif guest.dream is not None:
+                    mood = "😴💭"
                 else:
-                    mood = "🙂" if guest._awake_in_home else "😴"
-                box.add(Label(2, y, f"⬜ 🐠 {guest.display_name} {mood}"))
+                    mood = "😴"
+                text = f"⬜ 🐠 {guest.display_name} {mood}"
+                if mood == "😴💭" and on_open_dream is not None:
+                    box.add(
+                        Button(2, y, text).on_click(
+                            lambda _w, guest=guest: on_open_dream(guest)
+                        )
+                    )
+                else:
+                    box.add(Label(2, y, text))
             else:
                 box.add(Label(2, y, "⬜ (empty)", MUTED))
             slot += 1

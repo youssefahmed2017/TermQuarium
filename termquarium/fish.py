@@ -187,6 +187,36 @@ class Fish(Widget):
         self.vx, self.vy = random_velocity(self._effective_speed())
         self.hunger = 0.0  # 0 = full, 100 = starving
         self.health = 100.0
+        # Rolled fresh each night by aquarium.py's _assign_dreams(), cleared
+        # the moment this fish wakes (see the wake-reset block below) --
+        # None means "not dreaming tonight", not "hasn't been asked yet".
+        self.dream = None
+        # This fish's own diary -- distinct from Relationship.memories
+        # (relationships.py), which is a shared pair record. Populated by
+        # aquarium.py's _log_memory() at real, already-tracked event sites;
+        # newest last, oldest dropped once it exceeds MEMORY_LOG_LIMIT.
+        self.memory_log: list[str] = []
+        # True while this (non-predator) fish is currently within
+        # SHARK_SCARE_RADIUS of a Shark -- guards aquarium.py's
+        # _check_shark_scares() against re-firing every tick for as long as
+        # the scare lingers, only on the rising edge of a fresh approach.
+        self._shark_scare_active = False
+        # Nightmare reaction (see aquarium.py's _process_nightmares()), a
+        # two-phase timer: _nightmare_wake_at is when Phase 1 (the scare --
+        # 😨, still in the same bed) fires; _nightmare_relocate_at is when
+        # Phase 2 (the actual early wake + relocating to sleep beside a
+        # Friend, if any) fires next, NIGHTMARE_SCARE_FLASH_SECONDS later.
+        # _just_scared_until/_nightmare_comfort_until are the same "flash a
+        # mood for N seconds" trick _just_booped_until already uses, for
+        # the scared moment and the arrived-beside-a-friend moment;
+        # _seeking_friend_after_nightmare is True only while actively
+        # relocating toward a Friend after Phase 2, so _process_nightmares()
+        # knows when it's arrived.
+        self._nightmare_wake_at = None
+        self._nightmare_relocate_at = None
+        self._just_scared_until = None
+        self._nightmare_comfort_until = None
+        self._seeking_friend_after_nightmare = False
         self.birth_time = time.monotonic()
         if self.is_predator:
             # A predator is never bred and never a starter (both exclude
@@ -263,6 +293,17 @@ class Fish(Widget):
         prey = [f for f in self.fish_list if f is not self and not f.is_predator]
         i = nearest_index(self.fx, self.fy, [(f.fx, f.fy) for f in prey])
         return prey[i] if i is not None else None
+
+    def _nearest_container(self):
+        # Storm-shelter seeking (see draw()'s `environment["storm"]` branch)
+        # -- deliberately simpler than _claim_home()'s favorite/friend/
+        # nearest priority chain: a live weather reaction just wants
+        # *somewhere* to huddle near right now, not tonight's considered
+        # pick, and never claims/occupies the spot (no sleeping_in, no
+        # invisibility) so it can't collide with that night-time bookkeeping.
+        containers = [d for d in self.decorations if d.is_container]
+        i = nearest_index(self.fx, self.fy, [(d.fx, d.fy) for d in containers])
+        return containers[i] if i is not None else None
 
     def _group_centroid(self):
         """Average (x, y) of every other fish sharing this tank, or None if
@@ -541,6 +582,16 @@ class Fish(Widget):
             self._held_since = None
             self._wake_waker = None
             self._wake_next_attempt = None
+            self.dream = None  # whatever it dreamed about, it's awake now
+            # Defensive cleanup for a normal wake landing mid-nightmare-
+            # reaction (e.g. morning arrives before the 5s scare timer, or
+            # while still mid-comfort-flash) -- _process_nightmares() itself
+            # clears these the moment it actually fires each phase.
+            self._nightmare_wake_at = None
+            self._nightmare_relocate_at = None
+            self._just_scared_until = None
+            self._nightmare_comfort_until = None
+            self._seeking_friend_after_nightmare = False
             if now >= self._next_turn:
                 lo, hi = MIN_TURN_DELAY, MAX_TURN_DELAY
                 turn_speed = speed
@@ -669,6 +720,35 @@ class Fish(Widget):
                             self.foods.remove(target)
                             self.on_eat_food(target)
                         self.hunger, self.health = feed(self.hunger, self.health)
+                elif self.environment is not None and self.environment.get("storm"):
+                    # A live storm (see aquarium.py's _maybe_trigger_random_event()/
+                    # _end_storm()) overrides personality-driven steering/friend-
+                    # following/relaxing/schooling -- everyone heads for the
+                    # nearest container and huddles there for the duration --
+                    # but never eating/fleeing, which stay more urgent than
+                    # taking cover.
+                    shelter = self._nearest_container()
+                    if shelter is not None:
+                        arrive_radius = (
+                            shelter.radius + AVOID_MARGIN + HOME_ARRIVE_MARGIN
+                        )
+                        if (
+                            math.hypot(self.fx - shelter.fx, self.fy - shelter.fy)
+                            > arrive_radius
+                        ):
+                            blend = min(1.0, HOME_STEER_RATE * dt)
+                            self.vx, self.vy, _ = steer_toward_food(
+                                self.vx,
+                                self.vy,
+                                self.fx,
+                                self.fy,
+                                (shelter.fx, shelter.fy),
+                                speed,
+                                blend,
+                            )
+                        else:
+                            self.vx *= IDLE_DAMPING
+                            self.vy *= IDLE_DAMPING
                 elif self.personality == "Friendly" and mouse_pos is not None:
                     blend = min(1.0, FOLLOW_MOUSE_RATE * dt)
                     self.vx, self.vy, _ = steer_toward_food(
@@ -769,10 +849,24 @@ class Fish(Widget):
         self.x, self.y = round(self.fx), round(self.fy)
         canvas.write(self.abs_x, self.abs_y, self._glyph(), self.style)
 
-        if sleeping:
+        if self._just_scared_until is not None and now < self._just_scared_until:
+            # A nightmare just forced an early wake -- takes visual priority
+            # over everything else below, same reasoning as sleep beating
+            # the Friendly heart: a fish scared awake isn't quietly dreaming
+            # or mooning over the cursor.
+            canvas.write(self.abs_x, max(0, self.abs_y - 1), "😨", MUTED)
+        elif (
+            self._nightmare_comfort_until is not None
+            and now < self._nightmare_comfort_until
+        ):
+            canvas.write(self.abs_x, max(0, self.abs_y - 1), "🥺", MUTED)
+        elif sleeping:
             # Sleep takes visual priority over a Friendly heart -- a fish
-            # fast asleep isn't also mooning over the cursor.
-            canvas.write(self.abs_x, max(0, self.abs_y - 1), "😴", MUTED)
+            # fast asleep isn't also mooning over the cursor. A dreaming
+            # fish gets a 💭 alongside its 😴 -- purely a hint that there's
+            # something to click open (see aquarium.py's _open_dream()).
+            glyph = "😴💭" if self.dream is not None else "😴"
+            canvas.write(self.abs_x, max(0, self.abs_y - 1), glyph, MUTED)
         elif self.personality == "Friendly" and mouse_pos is not None:
             close = (
                 math.hypot(self.fx - mouse_pos[0], self.fy - mouse_pos[1])

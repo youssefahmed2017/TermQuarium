@@ -153,10 +153,10 @@ Phase 9: relationship scores, replacing the old one-time Friend/Rival dice
 roll (see relationships.py's module docstring for the full model). Every
 pair of fish shares exactly one continuous score in [-100, 100] -- nudged
 by real interactions (record_wake_up/record_slept_together/
-record_gave_up_home, the only three from the original design with an
-actual mechanic to hook into today; the rest -- sharing/stealing food,
-protecting from a shark, playing, fighting -- are natural follow-ups once
-those mechanics exist), decaying slowly back toward 0 if left alone
+record_gave_up_home/record_saved_from_shark/record_pushed_from_home; the
+rest of the original design -- sharing/stealing food, playing, fighting --
+are natural follow-ups once those mechanics exist), decaying slowly back
+toward 0 if left alone
 (decay_relationships(), once a day), and never shown to the player as a
 raw number -- only a state (relationship_state(): Rival/Dislikes/Neutral/
 Friend/Best Friend) plus its most recent reasons. Fish.friend/Fish.rival
@@ -189,7 +189,13 @@ from cozy_tui.motion import lerp_color
 from cozy_tui.widgets import Button, Label
 
 from examples.aquarium.termquarium.bubbles import BubbleField, _Bubble, rise_bubble
+from examples.aquarium.termquarium.console import (
+    CheatConsole,
+    build_console_commands,
+    run_console_command,
+)
 from examples.aquarium.termquarium.constants import *
+from examples.aquarium.termquarium.dreams import choose_dream
 from examples.aquarium.termquarium.economy import (
     compute_attractiveness,
     compute_visitor_income,
@@ -225,6 +231,8 @@ from examples.aquarium.termquarium.relationships import (
     get_relationship,
     random_personality,
     record_gave_up_home,
+    record_pushed_from_home,
+    record_saved_from_shark,
     record_slept_together,
     record_wake_up,
     relationship_state,
@@ -246,9 +254,11 @@ from examples.aquarium.termquarium.save import (
     duplicate_save,
     list_saves,
     load_cloud_key,
+    load_unlocked_achievements,
     read_save,
     rename_save,
     store_cloud_key,
+    store_unlocked_achievements,
     write_save,
 )
 from examples.aquarium.termquarium.shop import build_shop as _build_shop
@@ -268,6 +278,8 @@ from examples.aquarium.termquarium.styles import (
 )
 from examples.aquarium.termquarium.tank_objects import Decoration, Food, decoration_at
 from examples.aquarium.termquarium.ui import (
+    build_achievements_menu,
+    build_dream_view,
     build_help_menu,
     build_pause_menu,
     build_restore_menu,
@@ -327,11 +339,23 @@ def main() -> None:
     }
     hungry_warning_active = {"value": False}
     day_count = {"n": 0}
+    # Which tier ("rival"/"neutral"/"friend") each pair was in as of the
+    # last daily scan (see _check_milestone_achievements()) -- lets a real
+    # tier *crossing* get its own one-shot memory-log line ("I became
+    # friends with X") instead of re-logging it every single day the pair
+    # simply stays there. Deliberately session-only, not saved/restored:
+    # worst case after a reload is one re-logged crossing, not worth the
+    # save-format churn to avoid.
+    relationship_tier_seen: dict = {}
     # None until Cloud Saves is set up (or restored via an existing key) on
     # this machine -- see _open_settings()'s Cloud Saves section. Kept
     # separate from `state`/save snapshots deliberately: the key lives with
     # the *machine*, not with any one aquarium's save file.
     cloud = {"key": load_cloud_key()}
+    # Achievement ids already unlocked -- account-wide like the Cloud Key
+    # above (see save.py's load_unlocked_achievements()), not tied to any
+    # one aquarium's save, so a New Aquarium or Load never resets these.
+    unlocked_achievements = load_unlocked_achievements()
     # Name of the save this session is currently "attached to" -- None until
     # the player has either loaded or manually saved once. Once set, Save
     # (P) writes straight back into that same save instead of prompting for
@@ -353,6 +377,10 @@ def main() -> None:
     environment = {
         "phase": "Day",
         "temperature": BASE_WATER_TEMP,
+        # A live storm in progress -- see _maybe_trigger_random_event()'s
+        # "storm" branch/_end_storm() below and fish.py's draw(), which
+        # steers every awake fish toward the nearest container while True.
+        "storm": False,
     }  # shared with every Fish -- see world.py
 
     # Decorations sit on the tank floor and are added before any fish, so
@@ -394,6 +422,54 @@ def main() -> None:
         stats.text = (
             f"Money: ${state['money']}   Food: {state['food']}   Fish: {len(fish)}"
             f"   {icon} {environment['phase']}, {environment['temperature']:.0f}°C"
+        )
+
+    def _unlock_achievement(achievement_id: str) -> None:
+        # A no-op past the first call for any given id -- every call site
+        # below fires unconditionally whenever its event happens, trusting
+        # this to only ever toast/persist once.
+        if achievement_id in unlocked_achievements:
+            return
+        unlocked_achievements.add(achievement_id)
+        store_unlocked_achievements(unlocked_achievements)
+        achievement = next(a for a in ACHIEVEMENTS if a.id == achievement_id)
+        app.toast(
+            f"Achievement unlocked: {achievement.name}",
+            level="success",
+            icon="🏆",
+            duration=6.0,
+        )
+
+    def _check_new_fish_achievements(f: Fish) -> None:
+        if f.species_name == "Axolotl":
+            _unlock_achievement("first_axolotl")
+
+    def _open_achievements():
+        app.open_overlay(
+            build_achievements_menu(app, ACHIEVEMENTS, unlocked_achievements),
+            close_on_click_outside=True,
+        )
+
+    def _log_memory(f: Fish, text: str) -> None:
+        # This fish's own diary (see fish.py's Fish.memory_log) -- distinct
+        # from Relationship.memories, which is a shared pair record. Every
+        # call site below is an already-real, already-firing event; no new
+        # mechanics invented just to have something to write down.
+        f.memory_log.append(f"[Day {day_count['n']}] {text}")
+        del f.memory_log[:-MEMORY_LOG_LIMIT]
+
+    def _log_departure(departed: Fish) -> None:
+        # Must run before clear_relationships(departed, fish) -- that's what
+        # erases the bond info this reads. A deliberately simpler version of
+        # "the tank is getting quieter": one line per real departure, for
+        # bonded tankmates only, not a batched roster-comparison narrative.
+        for other in fish:
+            if other is not departed and departed in other.relationships:
+                _log_memory(other, f"{departed.display_name} isn't around anymore.")
+
+    def _open_dream(f: Fish) -> None:
+        app.open_overlay(
+            build_dream_view(app, f, _open_inspector), close_on_click_outside=True
         )
 
     def _wire_tooltip(f: Fish) -> None:
@@ -446,14 +522,18 @@ def main() -> None:
     def _sell_fish(f: Fish) -> None:
         fish.remove(f)
         app.widgets.remove(f)
+        _log_departure(f)
         clear_relationships(f, fish)
         state["money"] += f.sell_value
         _refresh_stats()
         app.toast(f"Sold {f.display_name} for ${f.sell_value}.", level="success")
+        _unlock_achievement("first_sale")
 
     def _open_inspector(f: Fish) -> None:
         app.open_overlay(
-            _build_inspector(app, f, _rename_fish, _sell_fish, state["treats"], _feed_treat),
+            _build_inspector(
+                app, f, _rename_fish, _sell_fish, state["treats"], _feed_treat
+            ),
             close_on_click_outside=True,
         )
 
@@ -515,7 +595,7 @@ def main() -> None:
         def _show():
             interior["occupants"] = _signature()
             interior["box"] = app.open_overlay(
-                _build_castle_interior(app, d, fish),
+                _build_castle_interior(app, d, fish, _open_dream),
                 close_on_click_outside=True,
                 on_close=_on_close,
             )
@@ -534,6 +614,7 @@ def main() -> None:
 
     def _on_eat_fish(eaten):
         app.widgets.remove(eaten)
+        _log_departure(eaten)
         clear_relationships(eaten, fish)
         app.toast(f"The shark ate {eaten.display_name}!", level="warning", icon="🦈")
         _refresh_stats()
@@ -554,6 +635,7 @@ def main() -> None:
         fish.append(f)
         app.add(f)
         _wire_tooltip(f)
+        _check_new_fish_achievements(f)
         return f
 
     def _seed_starter_aquarium() -> None:
@@ -607,6 +689,8 @@ def main() -> None:
                 f"Already at the stress-test cap ({STRESS_TEST_TARGET} fish).",
                 level="info",
             )
+        if len(fish) >= STRESS_TEST_TARGET:
+            _unlock_achievement("full_house")
 
     def _buy_food():
         state["food"] += FOOD_PACK_SIZE
@@ -631,6 +715,8 @@ def main() -> None:
                 level="success",
                 icon="🍕",
             )
+            _unlock_achievement("mystery_craving")
+            _log_memory(f, "I ate pizza 🍕. It was delicious!")
         elif kind in f.favorite_foods:
             # Flavor only -- same feed() relief as any other treat above,
             # just a nicer reaction. Personality, not a better stat stick.
@@ -640,6 +726,8 @@ def main() -> None:
                 level="success",
                 icon=item.emoji,
             )
+            _unlock_achievement("their_favorite")
+            _log_memory(f, f"Ate my favorite: {kind} {item.emoji}.")
         else:
             app.toast(f"Fed {f.display_name} some {kind}.", level="success")
         _refresh_stats()
@@ -693,6 +781,7 @@ def main() -> None:
                     "health": f.health,
                     "personality": f.personality,
                     "is_sleepy": f.is_sleepy,
+                    "memory_log": list(f.memory_log),
                     "age_seconds": max(0.0, time.monotonic() - f.birth_time),
                     "favorite": decoration_index.get(id(f.favorite_decoration)),
                 }
@@ -788,6 +877,7 @@ def main() -> None:
                 "health",
                 "personality",
                 "is_sleepy",
+                "memory_log",
             ):
                 if attr in saved:
                     setattr(f, attr, saved[attr])
@@ -904,7 +994,9 @@ def main() -> None:
 
     def _open_shop():
         app.open_overlay(
-            _build_shop(app, state, _spawn_fish, _buy_food, _add_decoration, _buy_treat),
+            _build_shop(
+                app, state, _spawn_fish, _buy_food, _add_decoration, _buy_treat
+            ),
             close_on_click_outside=True,
         )
 
@@ -919,6 +1011,7 @@ def main() -> None:
                 level="info",
                 duration=8.0,
             )
+            _unlock_achievement("backed_up")
             _open_settings()
 
         def _change_key():
@@ -999,6 +1092,25 @@ def main() -> None:
     def _open_help():
         app.open_overlay(build_help_menu(app), close_on_click_outside=True)
 
+    def _open_console():
+        # A dev/testing tool (backtick key) -- built fresh each time so its
+        # command registry always closes over the *current* fish/state,
+        # never a stale snapshot from an earlier "New Aquarium".
+        commands = build_console_commands(
+            state=state,
+            fish=fish,
+            add_fish=_add_fish,
+            spawn_fish=_spawn_fish,
+            buy_food=_buy_food,
+            buy_treat=_buy_treat,
+            add_decoration=_add_decoration,
+            refresh_stats=_refresh_stats,
+        )
+        console = CheatConsole(
+            lambda text: run_console_command(commands, text), style=app.style
+        )
+        app.open_overlay(console, close_on_click_outside=True)
+
     def _open_start_menu(on_resume=None):
         # `on_resume` is only ever passed by _return_to_main_menu() (a real
         # mid-session reset is now possible -- see _new_aquarium below);
@@ -1026,7 +1138,13 @@ def main() -> None:
         # is what actually unpauses, so all of them resume correctly.
         resumable = on_resume is not None
         menu = build_start_menu(
-            app, _new_aquarium, _load_save, _settings, _help, on_resume
+            app,
+            _new_aquarium,
+            _load_save,
+            _settings,
+            _help,
+            on_resume,
+            on_achievements=_open_achievements,
         )
         app.open_overlay(
             menu,
@@ -1059,6 +1177,7 @@ def main() -> None:
             on_settings=_open_settings,
             on_help=_open_help,
             on_quit=_confirm_quit,
+            on_achievements=_open_achievements,
         )
         app.open_overlay(
             box,
@@ -1083,6 +1202,7 @@ def main() -> None:
     app.on_key("H", lambda: _open_help())
     app.on_key("z", lambda: _stress_test())
     app.on_key("Z", lambda: _stress_test())
+    app.on_key("`", lambda: _open_console())
 
     def _on_mouse(event):
         if isinstance(event, MouseMove):
@@ -1093,7 +1213,10 @@ def main() -> None:
         if isinstance(event, MouseClick) and event.btn == 0:
             clicked = fish_at(fish, event.col, event.row)
             if clicked is not None:
-                _open_inspector(clicked)
+                if clicked.dream is not None:
+                    _open_dream(clicked)
+                else:
+                    _open_inspector(clicked)
                 return True
             clicked_dec = decoration_at(decorations, event.col, event.row)
             if clicked_dec is not None:
@@ -1113,6 +1236,85 @@ def main() -> None:
         return False
 
     app.on_mouse(_on_mouse)
+
+    def _end_storm() -> None:
+        environment["storm"] = False
+        app.toast("The storm has ended. Clear skies again.", level="info", icon="🌤️")
+
+    def _maybe_trigger_random_event() -> None:
+        # Only ever chooses among currently-applicable events (rather than
+        # rolling first and silently no-op'ing on a bad fit, e.g. a Storm
+        # with no fish to rattle) -- no fallback/no-op branch needed.
+        if random.random() >= RANDOM_EVENT_CHANCE:
+            return
+        candidates = ["lucky_find"]
+        if fish:
+            candidates.append("showing_off")
+            if not environment["storm"]:  # never stack a second storm on a live one
+                candidates.append("storm")
+        if len(fish) < MAX_FISH_FOR_BREEDING:
+            candidates.append("stray_fish")
+        event = random.choice(candidates)
+
+        if event == "stray_fish":
+            species = random.choice(STARTER_SPECIES)
+            f = _add_fish(species)
+            app.toast(
+                f"A stray {species.name} wandered in overnight and decided to "
+                f"stay! Welcome, {f.display_name}.",
+                level="info",
+                icon="🐟",
+                duration=6.0,
+            )
+            _log_memory(f, "I wandered in one night and decided to stay.")
+        elif event == "storm":
+            # A real, live weather state (not just a retroactive toast) --
+            # environment["storm"] is shared with every Fish, so this frame
+            # onward they steer for the nearest container and huddle there
+            # (see fish.py's draw()) until _end_storm() clears it.
+            environment["storm"] = True
+            app.after(STORM_DURATION_SECONDS, _end_storm)
+            for f in fish:
+                f.hunger = min(100.0, f.hunger + STORM_HUNGER_BUMP)
+                # A fish whose favorite spot is a real container gets the
+                # cozier line -- approximate (favorite_decoration, not
+                # tonight's actual sleeping_in, since this fires once per
+                # day and sleeping_in has already reverted to None by then)
+                # but a fair enough proxy for "usually has a home to shelter in".
+                if (
+                    f.favorite_decoration is not None
+                    and f.favorite_decoration.is_container
+                ):
+                    _log_memory(
+                        f,
+                        f"A storm rolled through, but the "
+                        f"{f.favorite_decoration.kind} kept me warm and dry.",
+                    )
+                else:
+                    _log_memory(f, "Survived a rough storm last night.")
+            app.toast(
+                "A storm is rolling in! The fish are seeking shelter.",
+                level="warning",
+                icon="⛈️",
+                duration=6.0,
+            )
+        elif event == "lucky_find":
+            amount = random.randint(*LUCKY_FIND_RANGE)
+            state["money"] += amount
+            _refresh_stats()
+            app.toast(
+                f"Found some loose change in the gravel: +${amount}.",
+                level="success",
+                icon="🪙",
+            )
+        elif event == "showing_off":
+            f = random.choice(fish)
+            app.toast(
+                f"{f.display_name} does a little spin, just because.",
+                level="info",
+                icon="✨",
+            )
+            _log_memory(f, "Did a little spin, just because.")
 
     def _check_emergency_welfare():
         if not should_grant_welfare(
@@ -1169,12 +1371,19 @@ def main() -> None:
                 level="info",
             )
             record_wake_up(waker, sleeper)
+            _log_memory(sleeper, f"{waker.display_name} woke me up.")
+            _log_memory(waker, f"I woke up {sleeper.display_name}.")
             _add_vignette(wakes=True)
         elif flavor == "resist":
             app.toast(
                 f"{waker.display_name} tries to boop {sleeper.display_name} awake... "
                 f"but {sleeper.display_name} is too sleepy to notice!",
                 level="info",
+            )
+            _log_memory(
+                waker,
+                f"I tried to wake {sleeper.display_name} up, but they were too "
+                "sleepy to notice.",
             )
             _add_vignette(wakes=False)
         else:
@@ -1185,11 +1394,12 @@ def main() -> None:
             )
 
     def _check_night_events():
-        # Two lightweight relationship-building checks run once at the
-        # Night -> Morning transition, alongside the vignette: pairs who
-        # ended up sleeping together (a shared container, or just close on
-        # the floor), and a homeless fish whose nearest housed tankmate
-        # benefits from the spot it didn't get. Both are real,
+        # Relationship-building checks run once at the Night -> Morning
+        # transition, alongside the vignette: pairs who ended up sleeping
+        # together (a shared container, or just close on the floor), a
+        # homeless fish whose nearest housed tankmate benefits from the
+        # spot it didn't get, and (below) two already-unfriendly fish
+        # forced into the same container anyway. All real,
         # currently-triggerable events -- see relationships.py's module
         # docstring for which interactions from the original design aren't
         # wired up yet (no mechanic exists for them today).
@@ -1201,16 +1411,80 @@ def main() -> None:
                 key = frozenset((id(a), id(b)))
                 if key in counted_together:
                     continue
-                together = (
+                shares_container = (
                     a.sleeping_in is not None and a.sleeping_in is b.sleeping_in
-                ) or (
+                )
+                floor_close = (
                     a.sleeping_in is None
                     and b.sleeping_in is None
                     and math.hypot(a.fx - b.fx, a.fy - b.fy) <= SLEEP_CLOSE_DISTANCE
                 )
-                if together:
-                    counted_together.add(key)
+                if not (shares_container or floor_close):
+                    continue
+                counted_together.add(key)
+                # Rivals actively sleep as far apart as the tank allows when
+                # there's no container involved (see Fish.draw()), so this
+                # only really happens for two who each independently reached
+                # for a container and unluckily landed on the same one.
+                already_unfriendly = (
+                    shares_container
+                    and get_relationship(a, b).score <= RELATIONSHIP_DISLIKE_THRESHOLD
+                )
+                if already_unfriendly:
+                    pusher, pushed = random.sample([a, b], 2)
+                    record_pushed_from_home(pusher, pushed)
+                    _log_memory(
+                        pushed,
+                        f"{pusher.display_name} pushed me out of the "
+                        f"{a.sleeping_in.kind}. I am angry.",
+                    )
+                else:
                     record_slept_together(a, b)
+                    if floor_close:
+                        _log_memory(
+                            a,
+                            "We watched the moon together tonight. Nobody said "
+                            "anything. It was nice.",
+                        )
+                        _log_memory(
+                            b,
+                            "We watched the moon together tonight. Nobody said "
+                            "anything. It was nice.",
+                        )
+
+        # Crowded-container flavor -- once per full container, not once per
+        # pair sharing it (a Castle's capacity-4 room has up to 6 pairs).
+        seen_containers = set()
+        for f in fish:
+            home = f.sleeping_in
+            if home is None or id(home) in seen_containers:
+                continue
+            seen_containers.add(id(home))
+            occupants = occupants_of(home, fish)
+            if len(occupants) >= home.capacity:
+                for guest in occupants:
+                    _log_memory(
+                        guest,
+                        f"It was crowded in the {home.kind} last night. Nobody "
+                        "complained.",
+                    )
+
+        # A solitary floor sleeper (no friend/rival pulling it anywhere)
+        # settled near its own favorite non-container spot -- a quieter
+        # counterpart to the shared-floor "watched the moon" memory above.
+        for f in fish:
+            if (
+                f.sleeping_in is None
+                and f.friend is None
+                and f.rival is None
+                and f.favorite_decoration is not None
+                and not f.favorite_decoration.is_container
+            ):
+                _log_memory(
+                    f,
+                    f"Slept near the {f.favorite_decoration.kind} floor tonight. "
+                    "Peaceful.",
+                )
 
         counted_gave_up = set()
         for f in fish:
@@ -1277,6 +1551,8 @@ def main() -> None:
             waker._just_booped_until = now + BOOP_FLASH_SECONDS
             if resolve_wake_attempt(f._wake_attempts_used, f._wake_threshold):
                 record_wake_up(waker, f)
+                _log_memory(f, f"{waker.display_name} woke me up.")
+                _log_memory(waker, f"I woke up {f.display_name}.")
                 app.toast(
                     f"{waker.display_name} notices {f.display_name} is still "
                     f"asleep... *boop*... {f.display_name} woke up!",
@@ -1286,6 +1562,162 @@ def main() -> None:
             else:
                 f._wake_attempts_used += 1
                 f._wake_next_attempt = now + WAKE_ATTEMPT_INTERVAL_SECONDS
+
+    def _check_shark_scares() -> None:
+        # Fills in relationships.py's long-noted gap ("protecting from a
+        # shark" was never a real mechanic) -- every non-predator fish
+        # within SHARK_SCARE_RADIUS of a Shark counts as scared, once per
+        # approach (Fish._shark_scare_active is the rising-edge guard, reset
+        # the moment it drifts back out of range so a later approach can
+        # fire again). A sleeping fish doesn't consciously experience fear
+        # or get "saved" -- Fish.draw()'s own sleeping condition applies
+        # regardless of a Shark's hunting, so a housed/floor sleeper can
+        # genuinely sleep right through a close call.
+        sharks = [f for f in fish if f.is_predator]
+        if not sharks:
+            return
+        for f in fish:
+            if f.is_predator:
+                continue
+            near_shark = any(
+                math.hypot(f.fx - s.fx, f.fy - s.fy) <= SHARK_SCARE_RADIUS
+                for s in sharks
+            )
+            if not near_shark:
+                f._shark_scare_active = False
+                continue
+            if f._shark_scare_active:
+                continue
+            f._shark_scare_active = True
+            asleep = (
+                environment["phase"] == "Night" and f.hunger <= SLEEP_HUNGER_THRESHOLD
+            )
+            if asleep:
+                _log_memory(f, "Slept through a shark getting close. Impressive.")
+                continue
+            rescuer = next(
+                (
+                    o
+                    for o in fish
+                    if o is not f
+                    and not o.is_predator
+                    and math.hypot(o.fx - f.fx, o.fy - f.fy) <= SHARK_RESCUE_RADIUS
+                    and get_relationship(f, o).score >= RELATIONSHIP_FRIEND_THRESHOLD
+                ),
+                None,
+            )
+            if rescuer is not None:
+                record_saved_from_shark(rescuer, f)
+                _log_memory(f, f"{rescuer.display_name} saved me from a shark!")
+                _log_memory(rescuer, f"I saved {f.display_name} from a shark!")
+            else:
+                _log_memory(
+                    f,
+                    random.choice(
+                        [
+                            "I heard the alarm. I've never swum that fast before.",
+                            "The shark looked right at me. I still remember its "
+                            "eyes.",
+                            "I narrowly escaped a shark. That was close!",
+                        ]
+                    ),
+                )
+
+    def _trigger_nightmare_scare(f: Fish) -> None:
+        # Phase 1: the scare itself. The fish stays exactly where it is
+        # (still tucked into its claimed home, if any) for
+        # NIGHTMARE_SCARE_FLASH_SECONDS while the 😨 mood shows -- see
+        # _trigger_nightmare_relocation() for the actual early wake.
+        dream = f.dream
+        now = time.monotonic()
+        f._nightmare_wake_at = None
+        f._just_scared_until = now + NIGHTMARE_SCARE_FLASH_SECONDS
+        f._nightmare_relocate_at = now + NIGHTMARE_SCARE_FLASH_SECONDS
+        _log_memory(f, f"I had a nightmare about {dream.title}. I woke up scared.")
+        app.toast(
+            f"{f.display_name} had a nightmare about {dream.title} and woke "
+            "up scared!",
+            level="warning",
+            icon="😨",
+        )
+        f.dream = None
+
+    def _trigger_nightmare_relocation(f: Fish) -> None:
+        # Phase 2, NIGHTMARE_SCARE_FLASH_SECONDS after the scare: the
+        # actual early, solo wake and (if there's a Friend) the quiet
+        # relocation to sleep beside them. Reuses Fish.draw()'s existing
+        # housing/floor-settle steering entirely unchanged -- setting
+        # sleeping_in (or leaving it None with a Friend present) is all
+        # that's needed; no new movement code.
+        f._nightmare_relocate_at = None
+        old_home = f.sleeping_in
+        if old_home is not None:
+            f.fx, f.fy = old_home.fx, old_home.fy
+            f.sleeping_in = None
+            f._entered = False
+            f._awake_in_home = False
+        friend = f.friend
+        if friend is None:
+            return  # simply settles back to sleep on its own, no relocation
+        friend_home = friend.sleeping_in
+        if friend_home is not None and len(occupants_of(friend_home, fish)) < (
+            friend_home.capacity
+        ):
+            f.sleeping_in = friend_home  # go straight there, room to spare
+        # else: leave sleeping_in None -- Fish.draw()'s own floor-settle
+        # logic already steers toward a Friend when unhoused, whether the
+        # friend is floor-sleeping or its container simply has no room left.
+        f._seeking_friend_after_nightmare = True
+
+    def _process_nightmares() -> None:
+        now = time.monotonic()
+        for f in fish:
+            if f._nightmare_wake_at is not None and now >= f._nightmare_wake_at:
+                _trigger_nightmare_scare(f)
+            if f._nightmare_relocate_at is not None and now >= f._nightmare_relocate_at:
+                _trigger_nightmare_relocation(f)
+            if f._seeking_friend_after_nightmare:
+                friend = f.friend
+                arrived = f._entered or (
+                    friend is not None
+                    and f.sleeping_in is None
+                    and math.hypot(f.fx - friend.fx, f.fy - friend.fy)
+                    <= SLEEP_CLOSE_DISTANCE
+                )
+                if arrived:
+                    f._seeking_friend_after_nightmare = False
+                    f._nightmare_comfort_until = now + NIGHTMARE_COMFORT_FLASH_SECONDS
+                    _log_memory(
+                        f,
+                        f"I quietly went to sleep beside {friend.display_name} "
+                        "after a bad dream.",
+                    )
+                    app.toast(
+                        f"{f.display_name} quietly went to sleep beside "
+                        f"{friend.display_name}.",
+                        level="info",
+                        icon="🥺",
+                    )
+
+    def _assign_dreams() -> None:
+        # Rolled once per fish, right as Night begins -- not every sleeper,
+        # every night: "ooh, Steve is dreaming tonight" should read as a
+        # notice-worthy exception (see constants.DREAM_CHANCE). Mirrors the
+        # same hunger gate Fish.draw() itself uses to decide `sleeping` at
+        # the start of a fresh Night (the `_holding_asleep` half of that
+        # condition doesn't apply yet this early).
+        for f in fish:
+            if f.hunger <= SLEEP_HUNGER_THRESHOLD and random.random() < DREAM_CHANCE:
+                f.dream = choose_dream(f)
+                _log_memory(
+                    f, f"I dreamed about {f.dream.title}. {f.dream.description}"
+                )
+                if f.dream.category == "bad":
+                    # A nightmare forces a real, early, solo wake -- see
+                    # _process_nightmares(), on the per-second tick.
+                    f._nightmare_wake_at = (
+                        time.monotonic() + NIGHTMARE_WAKE_DELAY_SECONDS
+                    )
 
     def _update_environment():
         previous_phase = environment["phase"]
@@ -1299,6 +1731,8 @@ def main() -> None:
             _check_night_events()
             _fire_morning_vignette()
             _start_sleepy_holds()
+        elif previous_phase != "Night" and environment["phase"] == "Night":
+            _assign_dreams()
 
     def _hunger_step() -> float:
         # Night: sleeping fish get hungry slower. Heat: a stressed fish
@@ -1326,6 +1760,7 @@ def main() -> None:
         for f in dead:
             fish.remove(f)
             app.widgets.remove(f)
+            _log_departure(f)
             clear_relationships(f, fish)
             app.toast(f"{f.display_name} starved to death...", level="error", icon="💀")
         _refresh_stats()
@@ -1348,6 +1783,8 @@ def main() -> None:
             hungry_warning_active["value"] = False
         _check_emergency_welfare()
         _process_sleepy_holds()
+        _check_shark_scares()
+        _process_nightmares()
 
         # Visitor donations pay out the moment they happen instead of being
         # bundled into the once-a-day summary -- see roll_visitor_donation()
@@ -1391,24 +1828,74 @@ def main() -> None:
                 price=species.price,
                 environment=environment,
                 paused=paused,
+                favorite_foods=species.favorite_foods,
             )
             fish.append(baby)
             app.add(baby)
             _wire_tooltip(baby)
+            _check_new_fish_achievements(baby)
             app.toast(
                 f"{parent_a.display_name} and {parent_b.display_name} had a baby! "
                 f"Welcome, {baby.display_name}.",
                 level="success",
                 icon="👶",
             )
+            _unlock_achievement("first_baby")
+            _log_memory(
+                parent_a,
+                f"Me and {parent_b.display_name} had a baby, {baby.display_name}! "
+                "I love them.",
+            )
+            _log_memory(
+                parent_b,
+                f"Me and {parent_a.display_name} had a baby, {baby.display_name}! "
+                "I love them.",
+            )
+            _log_memory(baby, "I was born today.")
         _refresh_stats()
+
+    def _relationship_tier(score: float) -> str:
+        if score <= RELATIONSHIP_RIVAL_THRESHOLD:
+            return "rival"
+        if score >= RELATIONSHIP_FRIEND_THRESHOLD:
+            return "friend"
+        return "neutral"
+
+    def _check_milestone_achievements() -> None:
+        # A plain once-a-day scan rather than hooking every interaction
+        # site directly -- a toast landing up to a day "late" is fine for
+        # flavor text, and this keeps achievement-awareness out of the hot
+        # per-second tick and out of fish.py/relationships.py entirely.
+        if day_count["n"] >= 7:
+            _unlock_achievement("one_week_in")
+        if any(f.sleeping_in is not None for f in fish):
+            _unlock_achievement("tucked_in")
+        for a, b, rel in all_relationship_pairs(fish):
+            if rel.score >= RELATIONSHIP_FRIEND_THRESHOLD:
+                _unlock_achievement("first_friend")
+            if rel.score >= RELATIONSHIP_BEST_FRIEND_THRESHOLD:
+                _unlock_achievement("best_friends")
+
+            key = frozenset((id(a), id(b)))
+            tier = _relationship_tier(rel.score)
+            previous = relationship_tier_seen.get(key)
+            if tier != previous:
+                if tier == "friend":
+                    _log_memory(a, f"I became friends with {b.display_name}.")
+                    _log_memory(b, f"I became friends with {a.display_name}.")
+                elif tier == "rival":
+                    _log_memory(a, f"I became rivals with {b.display_name}.")
+                    _log_memory(b, f"I became rivals with {a.display_name}.")
+                relationship_tier_seen[key] = tier
 
     def _daily_tick():
         if paused["value"]:
             return
         day_count["n"] += 1
         decay_relationships(fish)
+        _check_milestone_achievements()
         _try_breeding()
+        _maybe_trigger_random_event()
         attractiveness = compute_attractiveness(fish, decorations, foods)
         # Donations were already paid out (and toasted) second by second in
         # _per_second_tick as they happened -- only ticket sales and the

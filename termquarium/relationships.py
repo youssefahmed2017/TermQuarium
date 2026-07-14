@@ -35,6 +35,8 @@ from .constants import (
     WAKE_UP_SCORE,
     WAKE_UP_SCORE_PLAYFUL,
     GAVE_UP_HOME_SCORE,
+    SAVED_FROM_SHARK_SCORE,
+    PUSHED_FROM_HOME_SCORE,
 )
 
 
@@ -220,6 +222,33 @@ def record_gave_up_home(generous, beneficiary) -> None:
         delta,
         f"{generous.display_name} slept on the floor so "
         f"{beneficiary.display_name} could have the spot",
+    )
+
+
+def record_saved_from_shark(rescuer, saved) -> None:
+    """A Shark got within SHARK_SCARE_RADIUS of `saved`, and `rescuer` (an
+    existing Friend) was within SHARK_RESCUE_RADIUS at that moment -- see
+    aquarium.py's _check_shark_scares(). A bigger bump than the other
+    interactions here: real fear shared together is a strong bonding
+    moment, not a mild pleasantry like sleeping nearby."""
+    remember(
+        saved,
+        rescuer,
+        SAVED_FROM_SHARK_SCORE,
+        f"{rescuer.display_name} saved {saved.display_name} from a shark",
+    )
+
+
+def record_pushed_from_home(pusher, pushed) -> None:
+    """Two fish who already Dislike each other or worse end up sharing a
+    container overnight anyway (see aquarium.py's _check_night_events()) --
+    the unfriendly counterpart to record_slept_together(): forced proximity
+    sours an already-bad bond instead of warming a neutral one."""
+    remember(
+        pushed,
+        pusher,
+        PUSHED_FROM_HOME_SCORE,
+        f"{pusher.display_name} pushed {pushed.display_name} out of their shared home",
     )
 
 
