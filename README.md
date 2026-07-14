@@ -40,6 +40,7 @@ No extra dependencies beyond `cozy_tui` itself.
 | `Esc` | Pause |
 | `Ctrl+C` | Return to the Main Menu (Resume, New Aquarium, Load, Settings, Help, Quit) |
 | `Z` | Stress test — mass-spawn fish up to the cap (debug) |
+| `` ` `` | Cheat Console — typed commands for testing (debug) |
 
 ## What's in the tank
 
@@ -53,6 +54,11 @@ No extra dependencies beyond `cozy_tui` itself.
 - **Save/Load** — name a save once and `P` keeps saving into it; the Load menu can Rename, Duplicate, or Delete any save.
 - **Cloud Saves** — optional: set up a Cloud Key from Settings to sync a named save to the cloud and restore it again on a different machine. No account/password — the key itself is the credential, so keep it somewhere safe.
 - **Main Menu, anytime** — `Ctrl+C` pauses and returns to the Main Menu from anywhere (even from inside another menu), with a Resume button to pick your session back up exactly where it was, or New Aquarium/Load/Settings/Help/Quit if you'd rather not.
+- **Achievements** — 11 account-wide milestones (a first friendship, a first baby, setting up Cloud Saves, ...) that survive a New Aquarium or a Load, since they're tied to the machine, not any one save. Always transparent — every name and description shows whether it's unlocked or not.
+- **Random Events** — about once every 8 days, something happens on its own: a stray fish wanders in and stays for free, a storm rolls through (a real live event now — every awake fish heads for the nearest container and huddles there until it passes), a few dollars turn up in the gravel, or a fish does a little spin for no reason.
+- **Dreams** — sleeping fish occasionally dream, shown as a 💭 next to their 😴 and clickable into a small looping animated scene. Personality leans which kind (Explorer → Fantasy, Greedy → Food, Shy → Home, Friendly → Friendship, Lazy/Playful → Happy) about 60% of the time; the rest is spread across the others. A fish's own memory shapes it further — a recent shark scare, a recent moment with its Friend, or a tankmate it's lost can all resurface in a dream. A nightmare is the one dream with real consequences: the fish wakes up scared after 5 seconds, then quietly relocates to sleep beside a Friend if it has one.
+- **Fish Memory Log** — every fish keeps its own diary in its Inspector (up to 10 entries, oldest dropped first) — a favorite treat, waking a friend up, becoming friends or rivals, surviving a storm, a tankmate that isn't around anymore.
+- **Cheat Console** — press `` ` `` for a small typed-command console meant for testing: `spawn_fish(species, name=None, amount=1)`, `set_health`/`set_hunger(fish_name, amount)`, `set_money`/`set_food(amount)`, and `buy(name)` (still costs money, like the real Shop). Commands are parsed structurally, never `eval()`'d, and every one calls the same real code the Shop/Inspector already use.
 
 ## Building a standalone Windows executable
 
@@ -68,7 +74,7 @@ iscc TermQuarium.iss                # -> Output/TermQuarium-Setup.exe (needs Inn
 The game's pure logic (steering, hunger, economy, relationships, save format) is unit-tested independently of any real terminal:
 
 ```bash
-python -m pytest tests/test_aquarium.py tests/test_termquarium_save.py tests/test_termquarium_world.py tests/test_termquarium_cloud.py tests/test_termquarium_cloud_api.py -q
+python -m pytest tests/test_aquarium.py tests/test_termquarium_save.py tests/test_termquarium_world.py tests/test_termquarium_cloud.py tests/test_termquarium_cloud_api.py tests/test_termquarium_console.py -q
 ```
 
 ## Project layout
@@ -86,5 +92,7 @@ termquarium/
   vignettes.py           # the morning "*boop*" in-tank caption
   world.py               # day/night cycle, water temperature
   save.py                # versioned JSON save/load
+  dreams.py              # the Dream System: categories, memory-linking, the animation widget
+  console.py             # the Cheat Console: command parser, registry, the widget
   shop.py, ui.py, inspectors.py   # Shop, menus, and Inspector panel builders
 ```

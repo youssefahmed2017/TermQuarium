@@ -78,7 +78,7 @@
             <p>A treat relieves hunger by exactly the same amount as regular Fish Food — there's no bigger number for buying one, on purpose. What changes is the reaction: a species with a declared favorite (today, just the Axolotl — Brine Shrimp, Bloodworms, and Worms) lights up when fed one, shown as a nicer toast. Pizza sits outside that system entirely — nobody has it as a declared favorite, yet every fish is delighted by it regardless, which is exactly why it's kept to a single serving per purchase instead of a pack of five like the others.</p>
 
             <h2>Relationships</h2>
-            <p>Every pair of fish shares one continuous bond score from &minus;100 to 100, nudged by real events — waking each other, sleeping side by side, giving up a bed — and slowly decaying if left alone. The score maps to a state:</p>
+            <p>Every pair of fish shares one continuous bond score from &minus;100 to 100, nudged by real events — waking each other, sleeping side by side, giving up a bed, a Friend nearby credited with a rescue when a Shark gets close — and slowly decaying if left alone. Forced proximity can hurt as easily as it helps: two fish who already dislike each other or worse, sharing a home overnight anyway, are pushed further apart instead of closer. The score maps to a state:</p>
             <div class="docs-table-wrap">
               <table>
                 <thead><tr><th>Score</th><th>State</th></tr></thead>
@@ -107,6 +107,48 @@
 
             <h2>Day &amp; night</h2>
             <p>Water temperature and light drift together on one continuous curve, warmest at noon and coldest at midnight. Fish move measurably slower once the water turns cold, and non-hungry fish stop swimming and sleep once night falls — a hard stop, not just a slowdown.</p>
+
+            <h2>Achievements</h2>
+            <p>Eleven account-wide milestones, from a first friendship to setting up Cloud Saves — tracked separately from any one save file, so a New Aquarium or a Load never resets what's already been earned. The Achievements menu is deliberately transparent: every name and description is visible whether it's unlocked or not, so it doubles as a light to-do list.</p>
+
+            <h2>Random Events</h2>
+            <p>Once a day, there's roughly a 1-in-8 chance something happens on its own:</p>
+            <div class="docs-table-wrap">
+              <table>
+                <thead><tr><th>Event</th><th>What happens</th></tr></thead>
+                <tbody>
+                  <tr><td>🐟 Stray Wanderer</td><td>A free starter fish shows up overnight and stays — a gift, not a purchase, so there's no rename prompt (only while under the fish cap)</td></tr>
+                  <tr><td>⛈️ Storm</td><td>A real, live weather event — every fish's hunger climbs, and every awake fish heads for the nearest container and huddles there until it passes, about 25 seconds later, with its own toast when it ends</td></tr>
+                  <tr><td>🪙 Lucky Find</td><td>A small, unconditional $5&ndash;20 turns up in the gravel</td></tr>
+                  <tr><td>✨ Showing Off</td><td>Purely cosmetic — a random fish gets a one-line toast and nothing else changes</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h2>Dreams</h2>
+            <p>About a quarter of tonight's actually-sleeping fish dream — shown as a 💭 next to their 😴, clickable into a small looping animated scene with a plain-language caption underneath. Which kind of dream leans on personality (Explorer &rarr; Fantasy, Greedy &rarr; Food, Shy &rarr; Home, Friendly &rarr; Friendship, Lazy/Playful &rarr; Happy) about 60% of the time, spread across the other categories the rest of the time — never an exclusive lock.</p>
+            <p>A fish's own Memory Log shapes it further: a recent shark scare gives a much-better-than-usual chance of a nightmare about it specifically; a recent memory naming its current Friend nudges toward a dream about them regardless of personality; and a tankmate it's lost can resurface in a dream of their own, for as long as that memory survives the log's cap — grief fading naturally as newer memories crowd it out, with no separate timer.</p>
+            <p>A nightmare is the one dream with real consequences. Five seconds in, the fish wakes up scared (😨, for a few seconds) right where it was sleeping. If it has a Friend, it then quietly relocates to sleep beside them — joining their claimed home if there's room, or just settling close on the floor if not — with a brief 🥺 once it arrives. No Friend, and it simply settles back to sleep on its own.</p>
+
+            <h2>Fish Memory Log</h2>
+            <p>Every fish keeps its own diary, shown in its Inspector — up to 10 entries, oldest dropped first. Unlike a relationship's shared memories (only ever "why" for one specific pair), this is one fish's own history: a favorite treat, waking a friend up, becoming friends or rivals with someone, surviving a storm, escaping — or being saved from — a Shark, and a tankmate that isn't around anymore.</p>
+
+            <h2>Cheat Console</h2>
+            <p>Press <kbd>&#96;</kbd> to open a small typed-command console, meant for testing rather than normal play. Commands are parsed structurally (never <code class="mono">eval()</code>'d), and each one calls the exact same code the Shop/Inspector already use — there's no separate cheat-only path underneath.</p>
+            <div class="docs-table-wrap">
+              <table>
+                <thead><tr><th>Command</th><th>Effect</th></tr></thead>
+                <tbody>
+                  <tr><td class="mono">help()</td><td>List every available command</td></tr>
+                  <tr><td class="mono">spawn_fish(species, name=None, amount=1)</td><td>A free fish, no money needed</td></tr>
+                  <tr><td class="mono">set_health(fish_name, amount)</td><td>0&ndash;100</td></tr>
+                  <tr><td class="mono">set_hunger(fish_name, amount)</td><td>0&ndash;100, 0 = full</td></tr>
+                  <tr><td class="mono">set_money(amount)</td><td>Sets it exactly, not additive</td></tr>
+                  <tr><td class="mono">set_food(amount)</td><td>Sets it exactly, not additive</td></tr>
+                  <tr><td class="mono">buy(name)</td><td>Buys from the Shop like the real thing — still costs money</td></tr>
+                </tbody>
+              </table>
+            </div>
 
           </div>
         </div>
